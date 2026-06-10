@@ -1,0 +1,321 @@
+# Dependabot 設定
+#
+# 各 ecosystem の依存関係を月次で更新。
+# - minor / patch は groups でまとめて 1 PR
+# - major bump は ignore (手動レビュー)
+# - PR 上限 5、commit prefix "deps"、labels ["dependencies","automated"]
+#
+# Reference:
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# ── 既知の失敗パターン: Dependency Graph (GitHub Dependency Submission API) ──
+# GitHub 側で動的生成される `Dependency Graph` チェック (`event: dynamic`、
+# 本ファイルに対応する yaml は無く `github/dependabot-action@main` 内蔵) は、
+# `pyproject.toml` を見つけると uv updater を試行する仕様で、
+# subdirectory に独立 `uv.lock` が無いと `update-uv-graph` ジョブが
+#   "ERROR No uv.lock or pyproject.toml present."
+# で fail する (sha 1595f630 で観測)。 PR では走らないため dev push 後に
+# しか発覚しない。
+#
+# 本ファイルでの対応:
+#   uv workspace member (src/python, src/python/g2p, src/python_run) は
+#   root の uv ecosystem 1 本に統合し、 root `uv.lock` を canonical 視させる。
+#   GitHub Dependency Submission API も同 lock を読みに行くため、
+#   subdirectory の `pyproject.toml` を見つけても uv updater は root lock で
+#   解決可能 (Issue #418 で src/python_run に [project] テーブル追加 +
+#   workspace member 化が完了済)。
+
+version: 2
+
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      gh-actions:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # Python (uv workspace): root が uv workspace の統括点
+  # ([tool.uv.workspace] members = src/python, src/python/g2p, src/python_run)。
+  # root の `uv.lock` に 3 member 全依存を集約しているため、 Dependabot uv
+  # ecosystem を root 1 箇所に登録するだけで全 member を update できる。
+  # GitHub Dependency Submission API ("Dependency Graph" check) も同 lock を
+  # canonical 視するため、 subdirectory pyproject.toml の uv updater 試行
+  # (sha 1595f630 で `update-uv-graph` が `uv.lock` 不在で fail した経緯) を
+  # 抑止できる (Issue #418 で src/python_run も workspace 統合した)。
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      python-uv-workspace:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # Rust: src/rust (Cargo workspace)
+  - package-ecosystem: "cargo"
+    directory: "/src/rust"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      cargo:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # npm: openjtalk-web (piper-plus npm)
+  - package-ecosystem: "npm"
+    directory: "/src/wasm/openjtalk-web"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      npm-openjtalk-web:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # npm: g2p (@piper-plus/g2p)
+  - package-ecosystem: "npm"
+    directory: "/src/wasm/g2p"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      npm-g2p:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # Go: src/go
+  - package-ecosystem: "gomod"
+    directory: "/src/go"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      gomod:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+      # onnxruntime_go の minor bump は ORT バージョン整合性に直結するため
+      # 手動で計画的に更新する。Issue #372 (ORT バージョン floor 統一)。
+      # 過去事例: PR #417 で 1.27 → 1.30 (内部で ORT 1.25 へ upgrade) が
+      # 提案されたが、CI の libonnxruntime.so (ORT 1.20 系) と API 不整合で
+      # integration-test fail。Python/Rust/C#/C++ と同時更新する PR で
+      # unignore する想定。
+      - dependency-name: "github.com/yalue/onnxruntime_go"
+        update-types:
+          - "version-update:semver-minor"
+
+  # Gradle: android/piper-plus-g2p
+  - package-ecosystem: "gradle"
+    directory: "/android/piper-plus-g2p"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      gradle:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # Swift Package Manager (Package.swift at repo root)
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      swift:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # Docker: python-inference (FastAPI OpenAI 互換 API)
+  - package-ecosystem: "docker"
+    directory: "/docker/python-inference"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      docker-python-inference:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+      # Python base image の minor bump (例: 3.13 → 3.14) は production の
+      # ライフサイクル判断を要するため自動 PR にせず手動で計画的に更新する。
+      # 過去事例: PR #413 で 3.11 → 3.14 (3 minor jump) が提案されたが、
+      # 3.14 が GA から間もない (2025-10) ため stable な 3.13 に手動 bump。
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-minor"
+      # CUDA image の minor bump (例: 12.4 → 12.9) も同様に production の
+      # GPU driver / cuDNN 互換性判断を要するため手動更新方針。
+      # 過去事例: PR #427 で 12.4.1 → 12.9.1 (5 minor jump) が提案された。
+      - dependency-name: "nvidia/cuda"
+        update-types:
+          - "version-update:semver-minor"
+
+  # Docker: webui (Gradio)
+  - package-ecosystem: "docker"
+    directory: "/docker/webui"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      docker-webui:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+      # Python base image の minor bump は手動で計画的に更新する
+      # (PR #415 の経緯。docker-python-inference と同方針)。
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-minor"
+
+  # Docker: wyoming (Home Assistant 連携)
+  - package-ecosystem: "docker"
+    directory: "/docker/wyoming"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    groups:
+      docker-wyoming:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+      # Python base image の minor bump は手動で計画的に更新する
+      # (PR #416 の経緯。docker-python-inference と同方針)。
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-minor"

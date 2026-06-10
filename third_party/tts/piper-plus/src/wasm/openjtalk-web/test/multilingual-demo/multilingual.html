@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multilingual TTS WebAssembly Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .language-selector {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+        }
+        .language-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .lang-button {
+            padding: 8px 16px;
+            border: 2px solid #ddd;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .lang-button:hover {
+            border-color: #4CAF50;
+        }
+        .lang-button.active {
+            background: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+        .model-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: #e8f5e9;
+            border-radius: 4px;
+            font-size: 14px;
+            color: #2e7d32;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #555;
+        }
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            font-family: inherit;
+            resize: vertical;
+            transition: border-color 0.3s;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover:not(:disabled) {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        button.secondary {
+            background: #757575;
+        }
+        button.secondary:hover:not(:disabled) {
+            background: #616161;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+        }
+        .status.success {
+            background: #e8f5e9;
+            color: #388e3c;
+            border: 1px solid #c8e6c9;
+        }
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+        .status.loading {
+            background: #fff3e0;
+            color: #f57c00;
+            border: 1px solid #ffe0b2;
+        }
+        .output-section {
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #f0f0f0;
+        }
+        .output-group {
+            margin-bottom: 20px;
+        }
+        pre {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 14px;
+            line-height: 1.5;
+            border: 1px solid #e9ecef;
+        }
+        .examples {
+            margin-top: 20px;
+        }
+        .example-button {
+            background: #f5f5f5;
+            color: #333;
+            border: 1px solid #ddd;
+            padding: 8px 16px;
+            margin: 4px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .example-button:hover {
+            background: #e0e0e0;
+            border-color: #bbb;
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #333;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Multilingual TTS WebAssembly Demo</h1>
+        <p class="subtitle">Multilingual speech synthesis engine - 6 languages (JA/EN/ZH/ES/FR/PT)</p>
+
+        <div id="status" class="status info">
+            Initializing... <span class="loading-spinner"></span>
+        </div>
+
+        <div class="language-selector">
+            <label>Language Selection</label>
+            <div class="language-buttons">
+                <button class="lang-button active" data-lang="ja">Japanese</button>
+                <button class="lang-button" data-lang="en">English</button>
+                <button class="lang-button" data-lang="zh">Chinese</button>
+                <button class="lang-button" data-lang="es">Spanish</button>
+                <button class="lang-button" data-lang="fr">French</button>
+                <button class="lang-button" data-lang="pt">Portuguese</button>
+            </div>
+            <div class="model-info" id="modelInfo">
+                Model: css10 (JA - Rust WASM jpreprocess)
+            </div>
+        </div>
+
+        <div class="input-group">
+            <label for="inputText">Text Input</label>
+            <textarea id="inputText" placeholder="Enter text here">こんにちは、今日はとても良い天気ですね。</textarea>
+        </div>
+
+        <div class="button-group">
+            <button id="generateBtn" disabled>Generate</button>
+            <button id="clearBtn" class="secondary">Clear</button>
+        </div>
+
+        <div class="examples">
+            <label>Examples:</label>
+            <div id="exampleButtons">
+                <!-- Examples will be populated based on selected language -->
+            </div>
+        </div>
+
+        <div class="output-section" id="outputSection" style="display: none;">
+            <h2>Results</h2>
+
+            <div class="output-group">
+                <label>Audio:</label>
+                <audio id="audioPlayer" controls style="width: 100%;"></audio>
+            </div>
+
+            <div class="output-group">
+                <label>Details:</label>
+                <pre id="detailsOutput"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "@piper-plus/g2p": "../../../g2p/src/index.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import { PiperPlus } from '../../src/index.js';
+
+        // Example texts for different languages (native text)
+        const examples = {
+            'ja': [
+                { text: 'こんにちは、世界！', label: '挨拶' },
+                { text: 'AI音声合成技術はとても進歩しています。', label: '技術' },
+                { text: '東京スカイツリーは634メートルです。', label: '数字' },
+                { text: '吾輩は猫である。名前はまだ無い。', label: '文学' }
+            ],
+            'en': [
+                { text: 'Hello, world!', label: 'Greeting' },
+                { text: 'Artificial intelligence text-to-speech technology.', label: 'Technical' },
+                { text: 'The quick brown fox jumps over the lazy dog.', label: 'Pangram' },
+                { text: 'To be or not to be, that is the question.', label: 'Literature' }
+            ],
+            'zh': [
+                { text: '你好，世界！', label: '问候' },
+                { text: '人工智能语音合成技术。', label: '技术' },
+                { text: '今天天气非常好，适合散步。', label: '日常' },
+                { text: '千里之行，始于足下。', label: '谚语' }
+            ],
+            'es': [
+                { text: '¡Hola, mundo!', label: 'Saludo' },
+                { text: 'Inteligencia artificial y síntesis de voz.', label: 'Técnico' },
+                { text: 'El cielo está muy azul hoy.', label: 'Diario' },
+                { text: 'En un lugar de la Mancha, de cuyo nombre no quiero acordarme.', label: 'Literatura' }
+            ],
+            'fr': [
+                { text: 'Bonjour, le monde!', label: 'Salutation' },
+                { text: 'Intelligence artificielle et synthèse vocale.', label: 'Technique' },
+                { text: 'Il fait très beau aujourd\'hui.', label: 'Quotidien' },
+                { text: 'Être ou ne pas être, telle est la question.', label: 'Littérature' }
+            ],
+            'pt': [
+                { text: 'Olá, mundo!', label: 'Saudação' },
+                { text: 'Inteligência artificial e síntese de voz.', label: 'Técnico' },
+                { text: 'Hoje o tempo está muito bom para passear.', label: 'Diário' },
+                { text: 'A vida é a arte do encontro, embora haja tanto desencontro pela vida.', label: 'Literatura' }
+            ]
+        };
+
+        // Language configurations
+        const languageConfigs = {
+            'ja': { name: 'Japanese', phonemizer: 'Rust WASM jpreprocess' },
+            'en': { name: 'English', phonemizer: 'Rule-based G2P' },
+            'zh': { name: 'Chinese', phonemizer: 'Character-based' },
+            'es': { name: 'Spanish', phonemizer: 'Rule-based' },
+            'fr': { name: 'French', phonemizer: 'Rule-based' },
+            'pt': { name: 'Portuguese', phonemizer: 'Rule-based' }
+        };
+
+        let piper = null;
+        let currentLanguage = 'ja';
+
+        const statusEl = document.getElementById('status');
+        const generateBtn = document.getElementById('generateBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const inputText = document.getElementById('inputText');
+        const outputSection = document.getElementById('outputSection');
+        const detailsOutput = document.getElementById('detailsOutput');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const modelInfo = document.getElementById('modelInfo');
+        const exampleButtons = document.getElementById('exampleButtons');
+
+        // Helper: load a script tag dynamically
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+
+        // Language buttons
+        document.querySelectorAll('.lang-button').forEach(btn => {
+            btn.addEventListener('click', () => switchLanguage(btn.dataset.lang));
+        });
+
+        // Initialize
+        async function init() {
+            try {
+                updateStatus('Loading onnxruntime-web...', 'loading');
+
+                // Load ONNX Runtime from CDN
+                await loadScript('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js');
+
+                updateStatus('Initializing PiperPlus...', 'loading');
+
+                piper = await PiperPlus.initialize({
+                    model: 'css10',
+                    ort: globalThis.ort,
+                    onProgress: ({ stage, progress, message }) => {
+                        updateStatus(`[${stage}] ${message} (${Math.round(progress * 100)}%)`, 'loading');
+                    }
+                });
+
+                updateStatus('Ready!', 'success');
+                generateBtn.disabled = false;
+
+                // Populate examples
+                updateExamples();
+
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                updateStatus(`Initialization error: ${error.message}`, 'error');
+            }
+        }
+
+        // Switch language
+        async function switchLanguage(lang) {
+            currentLanguage = lang;
+
+            // Update UI
+            document.querySelectorAll('.lang-button').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.lang === lang);
+            });
+
+            // Update model info
+            const config = languageConfigs[lang] || languageConfigs['ja'];
+            modelInfo.textContent = `Model: css10 (${lang.toUpperCase()} - ${config.phonemizer})`;
+
+            updateStatus('Ready!', 'success');
+
+            // Update examples
+            updateExamples();
+
+            // Clear output
+            clearOutput();
+        }
+
+        // Update example buttons
+        function updateExamples() {
+            exampleButtons.innerHTML = '';
+            const langExamples = examples[currentLanguage] || [];
+
+            langExamples.forEach(example => {
+                const btn = document.createElement('button');
+                btn.className = 'example-button';
+                btn.textContent = example.label;
+                btn.dataset.text = example.text;
+                btn.addEventListener('click', () => {
+                    inputText.value = example.text;
+                });
+                exampleButtons.appendChild(btn);
+            });
+        }
+
+        // Generate speech
+        async function generate() {
+            const text = inputText.value.trim();
+            if (!text) {
+                updateStatus('Please enter text.', 'error');
+                return;
+            }
+
+            try {
+                updateStatus('Synthesizing...', 'loading');
+                generateBtn.disabled = true;
+
+                const audio = await piper.synthesize(text, { language: currentLanguage });
+
+                // Display audio
+                const wavBlob = audio.toBlob();
+                const audioUrl = URL.createObjectURL(wavBlob);
+                audioPlayer.src = audioUrl;
+
+                // Show details
+                const langConfig = languageConfigs[currentLanguage] || languageConfigs['ja'];
+                detailsOutput.textContent = JSON.stringify({
+                    language: currentLanguage,
+                    languageName: langConfig.name,
+                    phonemizer: langConfig.phonemizer,
+                    duration: audio.duration.toFixed(2) + ' seconds',
+                    sampleRate: audio.sampleRate
+                }, null, 2);
+
+                outputSection.style.display = 'block';
+                updateStatus('Generation complete!', 'success');
+
+            } catch (error) {
+                console.error('Generation failed:', error);
+                updateStatus(`Generation error: ${error.message}`, 'error');
+            } finally {
+                generateBtn.disabled = false;
+            }
+        }
+
+        // Clear output
+        function clearOutput() {
+            inputText.value = '';
+            outputSection.style.display = 'none';
+            detailsOutput.textContent = '';
+            audioPlayer.src = '';
+        }
+
+        // Utility functions
+        function updateStatus(message, type = 'info') {
+            statusEl.className = `status ${type}`;
+            statusEl.innerHTML = message;
+            if (type === 'loading') {
+                statusEl.innerHTML += ' <span class="loading-spinner"></span>';
+            }
+        }
+
+        // Event listeners
+        generateBtn.addEventListener('click', generate);
+        clearBtn.addEventListener('click', clearOutput);
+
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>

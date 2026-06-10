@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>piper-plus</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .language-selector {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+        }
+        .language-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .lang-button {
+            padding: 8px 16px;
+            border: 2px solid #ddd;
+            background: white;
+            color: #333;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .lang-button:hover {
+            border-color: #4CAF50;
+            background: #f8f8f8;
+        }
+        .lang-button.active {
+            background: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        .voice-group {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+        }
+        .template-selector {
+            margin-bottom: 10px;
+        }
+        .template-selector select {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #555;
+        }
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            font-family: inherit;
+            resize: vertical;
+            transition: border-color 0.3s;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+            transition: border-color 0.3s;
+        }
+        select:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover:not(:disabled) {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        button.secondary {
+            background: #757575;
+        }
+        button.secondary:hover:not(:disabled) {
+            background: #616161;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+        }
+        .status.success {
+            background: #e8f5e9;
+            color: #388e3c;
+            border: 1px solid #c8e6c9;
+        }
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+        .output-section {
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #f0f0f0;
+        }
+        .output-group {
+            margin-bottom: 20px;
+        }
+        pre {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .feature-list {
+            background: #fff3e0;
+            border: 1px solid #ffe0b2;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .feature-list h3 {
+            color: #e65100;
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .feature-list ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .feature-list li {
+            margin-bottom: 5px;
+            color: #666;
+        }
+        .language-info {
+            background: #f0f7ff;
+            border: 1px solid #bbdefb;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .language-info h3 {
+            color: #1565c0;
+            margin-top: 0;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+        .language-info p {
+            margin: 0;
+            color: #555;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>piper-plus</h1>
+        <p class="subtitle">WebAssembly + ONNX Runtime Web - 6 languages multilingual neural TTS</p>
+
+        <div id="status" class="status info"></div>
+
+        <div class="feature-list">
+            <h3>Features</h3>
+            <ul>
+                <li>Japanese TTS (Rust WASM jpreprocess + Piper neural model)</li>
+                <li>English TTS (rule-based G2P + Piper neural model)</li>
+                <li>Chinese TTS (character-based + Piper neural model)</li>
+                <li>Spanish TTS (rule-based + Piper neural model)</li>
+                <li>French TTS (rule-based + Piper neural model)</li>
+                <li>Portuguese TTS (rule-based + Piper neural model)</li>
+                <li>Fully in-browser (no server required)</li>
+                <li>WebAssembly + ONNX Runtime Web</li>
+            </ul>
+        </div>
+
+        <div class="language-selector">
+            <label>Language Selection</label>
+            <div class="language-buttons">
+                <button class="lang-button active" data-lang="ja">Japanese</button>
+                <button class="lang-button" data-lang="en">English</button>
+                <button class="lang-button" data-lang="zh">Chinese</button>
+                <button class="lang-button" data-lang="es">Spanish</button>
+                <button class="lang-button" data-lang="fr">French</button>
+                <button class="lang-button" data-lang="pt">Portuguese</button>
+            </div>
+        </div>
+
+        <div class="language-info" id="languageInfo">
+            <h3>Japanese: Rust WASM jpreprocess phonemizer</h3>
+            <p>High-accuracy Japanese phonemization using Rust WASM jpreprocess with built-in dictionary</p>
+        </div>
+
+        <div class="input-group">
+            <label for="inputText">Text Input</label>
+            <div class="template-selector">
+                <label for="templateSelect">Template Selection</label>
+                <select id="templateSelect">
+                    <option value="">-- Free Input --</option>
+                </select>
+            </div>
+            <textarea id="inputText"></textarea>
+        </div>
+
+        <div class="button-group">
+            <button id="synthesizeBtn" disabled>Synthesize</button>
+            <button id="stopBtn" class="secondary" disabled>Stop</button>
+        </div>
+
+        <div class="output-section" id="outputSection" style="display: none;">
+            <h2>Output</h2>
+
+            <div class="output-group">
+                <label>Audio:</label>
+                <audio id="audioPlayer" controls style="width: 100%;"></audio>
+            </div>
+
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "@piper-plus/g2p": "../../../g2p/src/index.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import { PiperPlus } from '../../src/index.js';
+
+        let piper = null;
+        let currentLanguage = 'ja';
+
+        // UI i18n — auto-detect browser language
+        const uiStrings = {
+            'ja': {
+                title: 'piper-plus',
+                subtitle: 'WebAssembly + ONNX Runtime Web — 6言語マルチリンガル ニューラル音声合成',
+                features: '特徴',
+                featureList: [
+                    '日本語 TTS (Rust WASM jpreprocess + Piper ニューラルモデル)',
+                    '英語 TTS (ルールベース G2P + Piper ニューラルモデル)',
+                    '中国語 TTS (文字ベース + Piper ニューラルモデル)',
+                    'スペイン語 TTS (ルールベース + Piper ニューラルモデル)',
+                    'フランス語 TTS (ルールベース + Piper ニューラルモデル)',
+                    'ポルトガル語 TTS (ルールベース + Piper ニューラルモデル)',
+                    'ブラウザ内で完結 (サーバー不要)',
+                    'WebAssembly + ONNX Runtime Web',
+                ],
+                langSelection: '言語選択',
+                langNames: { ja: '日本語', en: '英語', zh: '中国語', es: 'スペイン語', fr: 'フランス語', pt: 'ポルトガル語' },
+                textInput: 'テキスト入力',
+                templateSelection: 'テンプレート選択',
+                freeInput: '-- 自由入力 --',
+                synthesize: '音声合成',
+                stop: '停止',
+                output: '出力',
+                audio: '音声:',
+                initializing: '初期化中...',
+                loadingOrt: 'onnxruntime-web を読み込み中...',
+                loadingModel: 'PiperPlus を初期化中 (モデルDL + WASM 音素化)...',
+                ready: '準備完了！',
+                synthesizing: '音声を合成中...',
+                done: '完了',
+                error: '初期化エラー',
+            },
+            'en': {
+                title: 'piper-plus',
+                subtitle: 'WebAssembly + ONNX Runtime Web - 6 languages multilingual neural TTS',
+                features: 'Features',
+                featureList: [
+                    'Japanese TTS (Rust WASM jpreprocess + Piper neural model)',
+                    'English TTS (rule-based G2P + Piper neural model)',
+                    'Chinese TTS (character-based + Piper neural model)',
+                    'Spanish TTS (rule-based + Piper neural model)',
+                    'French TTS (rule-based + Piper neural model)',
+                    'Portuguese TTS (rule-based + Piper neural model)',
+                    'Fully in-browser (no server required)',
+                    'WebAssembly + ONNX Runtime Web',
+                ],
+                langSelection: 'Language Selection',
+                langNames: { ja: 'Japanese', en: 'English', zh: 'Chinese', es: 'Spanish', fr: 'French', pt: 'Portuguese' },
+                textInput: 'Text Input',
+                templateSelection: 'Template Selection',
+                freeInput: '-- Free Input --',
+                synthesize: 'Synthesize',
+                stop: 'Stop',
+                output: 'Output',
+                audio: 'Audio:',
+                initializing: 'Initializing...',
+                loadingOrt: 'Loading onnxruntime-web...',
+                loadingModel: 'Initializing PiperPlus (downloading model + WASM phonemizer)...',
+                ready: 'Ready!',
+                synthesizing: 'Synthesizing...',
+                done: 'Done',
+                error: 'Initialization error',
+            }
+        };
+
+        // Detect browser UI language (ja → 'ja', others → 'en')
+        const browserLang = (navigator.language || '').slice(0, 2);
+        const ui = uiStrings[browserLang] || uiStrings['en'];
+
+        // Apply UI strings to static HTML elements
+        function applyUiStrings() {
+            document.querySelector('h1').textContent = ui.title;
+            document.querySelector('.subtitle').textContent = ui.subtitle;
+            document.querySelector('.feature-list h3').textContent = ui.features;
+            const featureItems = document.querySelectorAll('.feature-list li');
+            ui.featureList.forEach((text, i) => { if (featureItems[i]) featureItems[i].textContent = text; });
+            document.querySelector('.language-selector > label').textContent = ui.langSelection;
+            document.querySelectorAll('.lang-button').forEach(btn => {
+                const lang = btn.getAttribute('data-lang');
+                if (ui.langNames[lang]) btn.textContent = ui.langNames[lang];
+            });
+            document.querySelector('.input-group > label').textContent = ui.textInput;
+            document.querySelector('.template-selector > label').textContent = ui.templateSelection;
+            document.querySelector('#templateSelect option').textContent = ui.freeInput;
+            document.getElementById('synthesizeBtn').textContent = ui.synthesize;
+            document.getElementById('stopBtn').textContent = ui.stop;
+            document.querySelector('.output-section h2').textContent = ui.output;
+            document.querySelector('.output-group > label').textContent = ui.audio;
+            document.documentElement.lang = browserLang === 'ja' ? 'ja' : 'en';
+            document.getElementById('status').textContent = ui.initializing;
+            document.getElementById('inputText').placeholder = ui.textInput;
+        }
+        applyUiStrings();
+
+        const languageConfigs = {
+            'ja': {
+                name: 'Japanese',
+                testText: 'こんにちは、今日はとても良い天気ですね。',
+                templates: [
+                    'こんにちは、今日はとても良い天気ですね。',
+                    'これはPiper Plusの音声合成デモです。',
+                    'ニューラル音声合成はとても自然に聞こえます。',
+                    '桜の花が美しく咲いています。',
+                    '東京タワーは東京のシンボルです。'
+                ]
+            },
+            'en': {
+                name: 'English',
+                testText: 'Hello world! This is a test of the Piper text to speech system.',
+                templates: [
+                    'Hello world!',
+                    'This is a test of the Piper text to speech system.',
+                    'How are you today?',
+                    'Welcome to the Piper speech synthesis demo.',
+                    'The quick brown fox jumps over the lazy dog.'
+                ]
+            },
+            'zh': {
+                name: 'Chinese',
+                testText: '你好，今天天气非常好。',
+                templates: [
+                    '你好，今天天气非常好。',
+                    '欢迎使用语音合成演示。',
+                    '中文语音合成听起来非常自然。',
+                    '春天的花开得很美。'
+                ]
+            },
+            'es': {
+                name: 'Spanish',
+                testText: 'Hola, el tiempo es hermoso, vamos a dar un paseo.',
+                templates: [
+                    'Hola, el tiempo es hermoso, vamos a dar un paseo.',
+                    'Bienvenido a la demostración de síntesis de voz.',
+                    'La síntesis de voz en español suena muy natural.',
+                    'Las flores de primavera son muy hermosas.'
+                ]
+            },
+            'fr': {
+                name: 'French',
+                testText: 'Bonjour, comment allez-vous aujourd\'hui?',
+                templates: [
+                    'Bonjour, comment allez-vous aujourd\'hui?',
+                    'Bienvenue dans la démonstration de synthèse vocale.',
+                    'La synthèse vocale en français sonne très naturellement.',
+                    'Les fleurs du printemps sont très belles.'
+                ]
+            },
+            'pt': {
+                name: 'Portuguese',
+                testText: 'Olá, como você está hoje?',
+                templates: [
+                    'Olá, como você está hoje?',
+                    'Bem-vindo à demonstração de síntese de voz.',
+                    'A síntese de voz em português soa muito natural.',
+                    'As flores da primavera são muito bonitas.'
+                ]
+            }
+        };
+
+        const statusEl = document.getElementById('status');
+        const synthesizeBtn = document.getElementById('synthesizeBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const inputText = document.getElementById('inputText');
+        const outputSection = document.getElementById('outputSection');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const templateSelect = document.getElementById('templateSelect');
+        const languageInfo = document.getElementById('languageInfo');
+
+        // Helper: load a script tag dynamically
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+
+        // Initialize
+        async function init() {
+            try {
+                updateStatus(ui.loadingOrt);
+
+                // Load onnxruntime-web from CDN
+                await loadScript('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js');
+
+                updateStatus(ui.loadingModel);
+
+                piper = await PiperPlus.initialize({
+                    model: 'css10',
+                    ort: globalThis.ort,
+                    onProgress: ({ stage, progress, message }) => {
+                        updateStatus(`[${stage}] ${message} (${Math.round(progress * 100)}%)`);
+                    }
+                });
+
+                updateStatus(ui.ready, 'success');
+                synthesizeBtn.disabled = false;
+
+                // Initialize templates for default language
+                updateTemplates(currentLanguage);
+
+                // Setup event listeners
+                setupEventListeners();
+
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                updateStatus(`${ui.error}: ${error.message}`, 'error');
+            }
+        }
+
+        // Setup event listeners
+        function setupEventListeners() {
+            // Language buttons
+            document.querySelectorAll('.lang-button').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    const lang = e.target.getAttribute('data-lang');
+                    await switchLanguage(lang);
+                });
+            });
+
+            // Template selector
+            templateSelect.addEventListener('change', (e) => {
+                if (e.target.value) {
+                    inputText.value = e.target.value;
+                }
+            });
+
+            // Synthesis button
+            synthesizeBtn.addEventListener('click', synthesize);
+
+            // Stop button
+            stopBtn.addEventListener('click', () => {
+                audioPlayer.pause();
+                audioPlayer.currentTime = 0;
+                stopBtn.disabled = true;
+            });
+
+            // Audio player events
+            audioPlayer.addEventListener('play', () => {
+                stopBtn.disabled = false;
+            });
+
+            audioPlayer.addEventListener('ended', () => {
+                stopBtn.disabled = true;
+            });
+        }
+
+        // Switch language
+        async function switchLanguage(lang) {
+            currentLanguage = lang;
+
+            // Update UI
+            document.querySelectorAll('.lang-button').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-lang') === lang);
+            });
+
+            // Update text
+            const config = languageConfigs[lang];
+            inputText.value = config.testText;
+
+            // Update templates
+            updateTemplates(lang);
+
+            // Update language info
+            updateLanguageInfo(lang);
+
+            updateStatus('Ready!', 'success');
+        }
+
+        // Update templates
+        function updateTemplates(lang) {
+            const config = languageConfigs[lang];
+            templateSelect.innerHTML = '<option value="">-- Free Input --</option>';
+
+            config.templates.forEach((template) => {
+                const option = document.createElement('option');
+                option.value = template;
+                option.textContent = template;
+                templateSelect.appendChild(option);
+            });
+        }
+
+        // Update language info
+        function updateLanguageInfo(lang) {
+            const langInfoMap = {
+                'ja': {
+                    title: 'Japanese: Rust WASM jpreprocess phonemizer',
+                    desc: 'High-accuracy Japanese phonemization using Rust WASM jpreprocess with built-in dictionary'
+                },
+                'en': {
+                    title: 'English: Rule-based G2P + Piper neural synthesis',
+                    desc: 'English phonemization using rule-based G2P and Piper neural speech synthesis'
+                },
+                'zh': {
+                    title: 'Chinese: Character-based + Piper neural synthesis',
+                    desc: 'Chinese phonemization using character-based approach and Piper neural speech synthesis'
+                },
+                'es': {
+                    title: 'Spanish: Rule-based + Piper neural synthesis',
+                    desc: 'Spanish phonemization using rule-based approach and Piper neural speech synthesis'
+                },
+                'fr': {
+                    title: 'French: Rule-based + Piper neural synthesis',
+                    desc: 'French phonemization using rule-based approach and Piper neural speech synthesis'
+                },
+                'pt': {
+                    title: 'Portuguese: Rule-based + Piper neural synthesis',
+                    desc: 'Portuguese phonemization using rule-based approach and Piper neural speech synthesis'
+                }
+            };
+            const info = langInfoMap[lang] || langInfoMap['ja'];
+            languageInfo.innerHTML = `
+                <h3>${info.title}</h3>
+                <p>${info.desc}</p>
+            `;
+        }
+
+        // Synthesize speech
+        async function synthesize() {
+            const text = inputText.value.trim();
+            if (!text) {
+                updateStatus('Please enter text.', 'error');
+                return;
+            }
+
+            try {
+                updateStatus(ui.synthesizing);
+                synthesizeBtn.disabled = true;
+
+                const audio = await piper.synthesize(text, { language: currentLanguage });
+
+                // Use AudioResult.toBlob() for playback via <audio> element
+                const wavBlob = audio.toBlob();
+                const audioUrl = URL.createObjectURL(wavBlob);
+                audioPlayer.src = audioUrl;
+
+                outputSection.style.display = 'block';
+                updateStatus(ui.done, 'success');
+
+            } catch (error) {
+                console.error('Synthesis failed:', error);
+                updateStatus(`Synthesis error: ${error.message}`, 'error');
+            } finally {
+                synthesizeBtn.disabled = false;
+            }
+        }
+
+        // Utility functions
+        function updateStatus(message, type = 'info') {
+            statusEl.className = `status ${type}`;
+            statusEl.textContent = message;
+        }
+
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>

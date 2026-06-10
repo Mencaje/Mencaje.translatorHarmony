@@ -1,0 +1,262 @@
+name: python-tests
+
+# 最小権限: テスト実行のみ、 PR / issue への書き込み不要。
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+  pull_request:
+    branches: [ dev ]
+    paths:
+      - 'src/python/**'
+      - 'src/python_run/**'
+      - 'test/**'
+      - 'tools/benchmark/**'
+      - 'tests/fixtures/g2p/zh_en_loanword_matrix.json'
+      - 'tests/fixtures/g2p/pt_dialect_parity.json'
+      - 'tests/fixtures/phoneme_timing/**'
+      - 'tests/fixtures/short_text/**'
+      - 'tests/fixtures/ort_session/**'
+      - 'docs/spec/phoneme-timing-contract.toml'
+      - 'docs/spec/short-text-contract.toml'
+      - 'docs/spec/ort-session-contract.toml'
+      - 'docker/wyoming/**'
+      - '.github/workflows/python-tests.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: python-tests (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+        # `requires-python = ">=3.11"` をリポジトリ内 7 pyproject.toml
+        # (root / src/python / src/python/g2p / src/python_run / src/python_stub /
+        #  src/piper_phonemize_bundled / src/rust/piper-python) で宣言済みで、
+        # `Programming Language :: Python :: 3.{11,12,13}` も classifiers に
+        # 列挙済み (src/python_run/pyproject.toml / src/python/g2p/pyproject.toml)。
+        # 既に g2p-python-ci.yml は 3.11/3.12/3.13 を回している。
+        # 一方で本 workflow は 3.11 のみだったため、 3.12/3.13 で起きる
+        # 退行 (typing / std lib 変更 / deprecation) が PyPI release 直前まで
+        # 見えなかった。 OSS public で CI minute 無制限のため
+        # (memory: feedback_ci_matrix_no_reduction.md) 全 3 系列を回す。
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v6.0.2
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6.2.0
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install system dependencies (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libsndfile1 sox build-essential
+
+    - name: Install system dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install libsndfile sox
+
+    - name: Install Python dependencies (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        pip install --no-cache-dir uv
+        cd src/python
+        # Windows では training / inference テストを実行しない (下記 "Run unit tests (Windows)"
+        # で `-m "unit and not training and not benchmark and not inference"` で除外済み) ため、
+        # train extras (PyTorch + Lightning 等) はインストール不要。
+        # 加えて Python 3.13 では PyTorch 等の wheel 可用性が wheel cache に依存しがちで、
+        # Windows × 3.13 で source build に落ちると失敗しやすい。 [test,inference] に絞る:
+        # - test: pytest / coverage / mypy 等の test 基盤
+        # - inference: onnxruntime + soundfile (piper_plus.engine が `import onnxruntime`
+        #   を最上位で行うため、 unit テストでも collection 時に必要。 PyTorch は含まない)
+        # それでも torch を直接 import するテストファイルは下記 "Run unit tests (Windows)"
+        # の `--ignore` で collection 自体をスキップする。
+        uv pip install --system -e "g2p[all]" -e ".[test,inference]"
+
+    - name: Install Python dependencies (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        python -m pip install --upgrade pip
+        pip install --no-cache-dir uv
+        cd src/python
+        uv pip install --system -e "g2p[all]" -e ".[test,train]"
+
+    - name: Build Cython extensions (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cd src/python
+        uv pip install --system cython
+        python piper_train/vits/monotonic_align/setup.py build_ext --inplace
+
+    - name: Run unit tests (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        cd src/python
+        # Windows では PyTorch を入れない (上記 "Install Python dependencies (Windows)" 参照)。
+        # 下記テストファイルは module top-level で `import torch` するため、
+        # マーカーで除外する前の pytest collection 段階で ImportError を起こす。
+        # collection 時点で `--ignore` してスキップする (実質的に
+        # `-m "not training and not inference"` と同じ集合を除外)。
+        pytest tests/ -v --tb=short -m "unit and not training and not benchmark and not inference" `
+          --no-cov `
+          --ignore=tests/test_export_onnx.py `
+          --ignore=tests/test_export_onnx_mb_istft.py `
+          --ignore=tests/test_pytorch_onnx_parity.py `
+          --ignore=tests/test_wavlm_discriminator.py `
+          --ignore=tests/test_ema_callback.py `
+          --ignore=tests/test_monotonic_align.py `
+          --ignore=tests/test_vits.py
+
+    - name: Run unit tests (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cd src/python
+        # Run unit tests excluding inference tests (which require torch)
+        pytest tests/ -v --tb=short -m "unit and not training and not benchmark and not inference"
+
+    - name: Run integration tests (Unix only)
+      if: runner.os != 'Windows'
+      run: |
+        cd src/python
+        # `--no-cov` で coverage 計測を無効化 (subset 実行のため 70% 閾値を
+        # 満たさず誤検知。ガッツリ unit test 側の "Run unit tests" で計測)
+        pytest tests/ -v --tb=short -m "integration and not benchmark" --no-cov
+
+    - name: Run inference tests (Unix only)
+      if: runner.os != 'Windows'
+      run: |
+        cd src/python
+        pytest tests/ -v --tb=short -m "inference and unit" --no-cov
+
+    - name: Run training tests (Unix only)
+      # Issue #XXX: training-marked tests (WavLM Discriminator + SpeakerBalancedBatchSampler 等)
+      # は CI でも回す。重い依存は本ステップ前に test/train extras でインストール済み。
+      if: runner.os != 'Windows'
+      run: |
+        cd src/python
+        pytest tests/ -v --tb=short -m "training and unit" --no-cov
+
+    # ---------------------------------------------------------------
+    # Runtime package tests (src/python_run — PyPI piper-plus)
+    # ---------------------------------------------------------------
+    - name: Install runtime package dependencies
+      run: |
+        pip install pyopenjtalk-plus g2p-en pypinyin
+        # HTTP サーバー (FastAPI) のテストに必要な依存。バージョン制約は src/python_run/setup.py の [http] extras で一元管理。
+        pip install fastapi 'uvicorn[standard]' httpx
+        pip install pytest-asyncio  # NEW: 既存の test_http_* tests で asyncio_mode=auto を使う
+        # Wave 4: 一過性 flake (network / ONNX load timing / nltk download race) を
+        # 1 回 retry で吸収。 src/python_run/pyproject.toml [test] extras と同期。
+        # 永続的な flake は @pytest.mark.flaky で個別 quarantine、 本 install は
+        # CI 全体の safety net 。 docs/spec/test-flake-retry-contract.toml (Phase-1)。
+        pip install 'pytest-rerunfailures>=14.0'
+        python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng', quiet=True); nltk.download('cmudict', quiet=True)"
+      env:
+        PYTHONUTF8: '1'
+
+    - name: Run runtime phonemization tests
+      run: |
+        cd src/python_run
+        # Wave 4: --reruns 1 で network / nltk-download / pyopenjtalk warmup race を retry。
+        pytest tests/test_japanese_phonemization.py tests/test_multilingual_integration.py -v --tb=short --override-ini="addopts=" --reruns 1 --reruns-delay 1
+      env:
+        PYTHONUTF8: '1'
+
+    - name: Run runtime full tests (config, training manager, CLI, timing, streaming, short-text, zh-en, g2p-parallel, webui, http_server, text_splitter contract)
+      run: |
+        cd src/python_run
+        # Wave 4: --reruns 1 で HTTP server bind race / ONNX warmup / threading-related flake を retry。
+        pytest tests/test_config_fallback.py tests/test_english_phonemization.py tests/test_runtime.py tests/test_util_impl.py tests/test_cli_models.py tests/test_training_manager.py tests/test_training_integration.py tests/test_phoneme_timing.py tests/test_voice_timing.py tests/test_http_timing.py tests/test_http_server_root.py tests/test_voice_streaming.py tests/test_text_splitter.py tests/test_text_splitter_contract.py tests/test_voice_g2p_parallel.py tests/test_short_text_mitigation.py tests/test_zh_en_loanword_runtime.py tests/test_webui.py -v --tb=short --override-ini="addopts=" --reruns 1 --reruns-delay 1
+      env:
+        PYTHONUTF8: '1'
+
+    - name: Upload coverage to Codecov (runtime + g2p)
+      if: runner.os == 'Linux'
+      uses: codecov/codecov-action@v5.5.4
+      with:
+        files: src/python_run/coverage.xml,src/python/g2p/coverage.xml,src/python/coverage.xml
+        flags: python
+        fail_ci_if_error: false
+      continue-on-error: true
+
+    # ---------------------------------------------------------------
+    # G2P package tests (src/python/g2p/tests/ — piper-plus-g2p PyPI)
+    # ---------------------------------------------------------------
+    # g2p-python-ci.yml は src/python/g2p/** の変更時のみ走る。
+    # python-tests.yml の paths (src/python/**, src/python_run/**, etc.) でも
+    # G2P テストを回し、ランタイム / 学習側の変更が G2P と整合することを保証する。
+    # 依存 (pyopenjtalk-plus / g2p-en / pypinyin / g2pk2) は line 61/69 の
+    # `g2p[all]` extras でインストール済み。ja/en/zh/ko テストは
+    # @requires_* でゲートされており、インポートが失敗した環境では auto-skip する。
+    # ES/PT/FR/SV は依存なしのため常に実行される。
+    - name: Run G2P package tests (multilingual phonemizers, ssml, snapshots, zh-en loanword)
+      run: |
+        cd src/python/g2p
+        # Wave 4: --reruns 1 で g2p-en/g2pk2 lazy load の最初の attempt が cold cache で
+        # fail する flake を retry (2 回目は cache 効くため安定)。
+        pytest tests/ -v --tb=short --override-ini="addopts=" --reruns 1 --reruns-delay 1
+      env:
+        PYTHONUTF8: '1'
+
+    # ---------------------------------------------------------------
+    # Legacy tests (test/ — speaker_encoder, phoneme_ids, sampler)
+    # ---------------------------------------------------------------
+    - name: Run legacy tests (speaker_encoder, phoneme_ids, sampler)
+      run: |
+        cd src/python
+        pytest ../../test/ -v --tb=short --override-ini="addopts="
+      # test_speaker_encoder.py imports torch at collection time; Windows では torch 未インストールのためスキップ
+      if: runner.os != 'Windows'
+      env:
+        PYTHONUTF8: '1'
+
+    # ---------------------------------------------------------------
+    # Benchmark tool tests (tools/benchmark/)
+    # ---------------------------------------------------------------
+    - name: Run benchmark tool tests
+      run: |
+        cd src/python
+        pytest ../../tools/benchmark/test_benchmark.py -v --tb=short --override-ini="addopts="
+      env:
+        PYTHONUTF8: '1'
+
+    # ---------------------------------------------------------------
+    # Wyoming integration tests (docker/wyoming/test_integration.py)
+    # ---------------------------------------------------------------
+    # Wyoming/piper_plus は test_integration.py 内で mock されるので、
+    # Docker image を build しなくても pytest で直接実行可能。
+    - name: Run Wyoming integration tests
+      if: runner.os != 'Windows'
+      run: |
+        cd docker/wyoming
+        # `--no-cov` で coverage 計測を無効化 (root pyproject の
+        # --cov-fail-under=70 が継承されると Wyoming は 0% で fail する)
+        PYTHONPATH="${GITHUB_WORKSPACE}/src/python:${PYTHONPATH:-}" \
+          python -m pytest test_integration.py -v --tb=short --no-cov
+      env:
+        PYTHONUTF8: '1'
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v7.0.1
+      with:
+        name: test-results-${{ matrix.os }}-${{ matrix.python-version }}
+        path: |
+          src/python/.pytest_cache
+          src/python/htmlcov
+          src/python_run/htmlcov
+          src/python/g2p/htmlcov
+          **/coverage.xml
+        retention-days: 7

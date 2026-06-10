@@ -1,0 +1,1275 @@
+# C++ Tests CMake configuration
+
+# Resolve ONNX Runtime paths (Windows uses ONNXRUNTIME_INCLUDE_DIR/ONNXRUNTIME_LIB, Linux/macOS uses ort/ prefix)
+if(ONNXRUNTIME_INCLUDE_DIR)
+    set(ORT_INCLUDE_DIR ${ONNXRUNTIME_INCLUDE_DIR})
+else()
+    set(ORT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/ort/include)
+endif()
+
+if(ONNXRUNTIME_LIB)
+    get_filename_component(ORT_LIB_DIR ${ONNXRUNTIME_LIB} DIRECTORY)
+else()
+    set(ORT_LIB_DIR ${CMAKE_BINARY_DIR}/ort/lib)
+endif()
+
+# Add global compile definitions for all tests
+add_compile_definitions(SPDLOG_FMT_EXTERNAL=1)
+add_compile_definitions(FMT_HEADER_ONLY=1)
+
+# Macro: Link OpenJTalk static library and dependencies to a test target
+macro(link_openjtalk_to_test target_name)
+    target_include_directories(${target_name} PRIVATE
+        ${CMAKE_BINARY_DIR}/oj/include
+        ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+        # hts_stub/include: OpenJTalk ヘッダーの HTS_engine.h 依存を満たす互換シム
+        ${CMAKE_BINARY_DIR}/hts_stub/include
+    )
+    if(WIN32)
+        target_link_libraries(${target_name} ${CMAKE_BINARY_DIR}/oj/lib/openjtalk.lib)
+    else()
+        target_link_libraries(${target_name} ${CMAKE_BINARY_DIR}/oj/lib/libopenjtalk.a)
+    endif()
+    # hts_engine_stub: HTS 合成は不使用。OpenJTalk のリンク時シンボル解決にのみ必要。
+    if(TARGET hts_engine_stub)
+        target_link_libraries(${target_name} hts_engine_stub)
+    endif()
+    if(TARGET openjtalk_external)
+        add_dependencies(${target_name} openjtalk_external)
+    endif()
+endmacro()
+
+# Test sources
+set(TEST_SOURCES
+    test_phonemize.cpp
+    test_piper_core.cpp
+    test_openjtalk_security.cpp
+    test_openjtalk_error_handling.cpp
+    test_gpu_device_id.cpp
+    test_phoneme_parser.cpp
+    test_streaming.cpp
+    test_streaming_simple.cpp
+    test_streaming_raw_phonemes.cpp
+    test_n_variants.cpp
+    test_question_markers.cpp
+    test_model_speaker_detection.cpp
+    test_custom_dictionary.cpp
+    test_text_input.cpp
+    test_model_manager.cpp
+    test_download_utils.cpp
+    test_multilingual_g2p.cpp
+    test_swedish_phonemize.cpp
+    test_short_text_mitigation.cpp
+    test_split_sentences.cpp
+    test_zh_en_loanword.cpp
+    test_g2p_parallelism.cpp
+    test_speaker_encoder_golden.cpp
+    test_voice_cloning_cli.cpp
+)
+
+# Add Unix-only tests (require open_jtalk binary or Unix APIs)
+if(NOT WIN32 AND NOT MSVC)
+    list(APPEND TEST_SOURCES
+        test_dictionary_manager.cpp
+        test_openjtalk_optimized.cpp
+    )
+endif()
+
+# Add prosody inference test only when ONNX Runtime headers are available
+if(EXISTS "${ORT_INCLUDE_DIR}/onnxruntime_cxx_api.h" OR EXISTS "${CMAKE_BINARY_DIR}/pi/include/onnxruntime_cxx_api.h")
+    list(APPEND TEST_SOURCES test_prosody_inference.cpp)
+    # Speaker Encoder E2E gate also requires ONNX Runtime (skips at runtime
+    # when PIPER_SPEAKER_ENCODER_ONNX_PATH is unset, but compilation needs
+    # the C++ API headers).
+    list(APPEND TEST_SOURCES test_speaker_encoder_e2e.cpp)
+endif()
+
+# Issue #426: speaker_embedding inference fallback gate. Uses `piper.hpp` only
+# (no direct ORT headers needed), so we gate on `piper_common` target existence
+# rather than the broken `${ORT_INCLUDE_DIR}` / `pi/include` checks above
+# (which silently evaluate to false → those gated tests are unbuilt on dev too,
+# but that's a pre-existing issue out of scope for this PR). Auto-skips at
+# runtime when the fixture has not been generated.
+if(TARGET piper_common)
+    list(APPEND TEST_SOURCES test_speaker_embedding_inference.cpp)
+endif()
+
+# Create test executables
+foreach(test_source ${TEST_SOURCES})
+    get_filename_component(test_name ${test_source} NAME_WE)
+    add_executable(${test_name} ${test_source})
+
+    # Base libraries
+    target_link_libraries(${test_name}
+        gtest
+        gtest_main
+    )
+
+    # Add Windows-specific library directories for all tests
+    if(WIN32)
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/fi/lib
+            ${CMAKE_BINARY_DIR}/si/lib
+        )
+
+        # Issue #383 follow-up: Windows ML ships an out-of-date
+        # onnxruntime.dll under C:\Windows\System32. When a test exe has no
+        # DLL alongside it, the loader picks up that older DLL and ORT
+        # rejects the modern model with "The given version [N] is not
+        # supported, only version 1 to 10 is supported in this build."
+        # Copy the bundled ORT DLLs next to every test exe so the loader
+        # finds the matching version first.
+        if(ONNXRUNTIME_DLL)
+            add_custom_command(TARGET ${test_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ONNXRUNTIME_DLL}"
+                    "$<TARGET_FILE_DIR:${test_name}>/onnxruntime.dll"
+                COMMENT "Staging onnxruntime.dll next to ${test_name}"
+            )
+            get_filename_component(_ORT_DLL_DIR "${ONNXRUNTIME_DLL}" DIRECTORY)
+            file(GLOB _ORT_PROVIDER_DLLS "${_ORT_DLL_DIR}/onnxruntime_providers*.dll")
+            foreach(_ort_dll ${_ORT_PROVIDER_DLLS})
+                add_custom_command(TARGET ${test_name} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${_ort_dll}"
+                        "$<TARGET_FILE_DIR:${test_name}>/"
+                    COMMENT "Staging ORT provider DLL next to ${test_name}"
+                )
+            endforeach()
+        endif()
+    endif()
+
+    # Add spdlog/fmt dependencies for all tests
+    if(TARGET spdlog_external)
+        add_dependencies(${test_name} spdlog_external)
+    endif()
+    if(TARGET fmt_external)
+        add_dependencies(${test_name} fmt_external)
+    endif()
+
+    # Add include directories for spdlog/fmt
+    target_include_directories(${test_name} PRIVATE
+        ${CMAKE_BINARY_DIR}/si/include
+        ${CMAKE_BINARY_DIR}/fi/include
+    )
+
+    # Link additional dependencies for dictionary manager test
+    if(${test_name} STREQUAL "test_dictionary_manager" AND NOT WIN32 AND NOT MSVC)
+        target_sources(${test_name} PRIVATE
+            ../openjtalk_dictionary_manager.c
+            ../piper_proc_exec.c
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+        target_compile_definitions(${test_name} PRIVATE
+            OPENJTALK_DIC_PATH="../share/open_jtalk/dic"
+        )
+    endif()
+
+    # Link utf8_utils.hpp include path for split sentences test
+    if(${test_name} STREQUAL "test_split_sentences")
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+    endif()
+
+    # Issue #383 Phase 1: parallelism helper test needs src/cpp on include path.
+    if(${test_name} STREQUAL "test_g2p_parallelism")
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+    endif()
+
+    # Link additional dependencies for custom dictionary test
+    if(${test_name} STREQUAL "test_custom_dictionary")
+        target_sources(${test_name} PRIVATE
+            ../custom_dictionary.cpp
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+    endif()
+
+    # ZH-EN loanword test depends on chinese_loanword + chinese_phonemize
+    # (TICKET-05 P6). chinese_phonemize.cpp uses utf8.h / json.hpp (header-only).
+    if(${test_name} STREQUAL "test_zh_en_loanword")
+        target_sources(${test_name} PRIVATE
+            ../chinese_loanword.cpp
+            ../chinese_phonemize.cpp
+            ../phoneme_parser.cpp
+            ../library_path.c
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/si/include
+            ${CMAKE_BINARY_DIR}/fi/include
+        )
+        if(UNIX AND NOT APPLE)
+            target_link_libraries(${test_name} dl)
+        endif()
+        # ``getDefaultLoanwordData()`` resolves data via the exe-relative
+        # ``<exe-dir>/data/zh_en_loanword.json`` layout (matching desktop install).
+        # Copy the JSON next to the test binary so the bundled-data path is
+        # populated for ``ZhEnLoanwordTest.FixtureMatrixLoadable``.
+        add_custom_command(TARGET ${test_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                $<TARGET_FILE_DIR:${test_name}>/data
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_SOURCE_DIR}/src/cpp/data/zh_en_loanword.json
+                $<TARGET_FILE_DIR:${test_name}>/data/zh_en_loanword.json
+            COMMENT "Staging zh_en_loanword.json next to ${test_name}"
+        )
+    endif()
+
+    # Link additional dependencies for model manager test
+    if(${test_name} STREQUAL "test_model_manager")
+        target_sources(${test_name} PRIVATE
+            ../model_manager.cpp
+            ../library_path.c
+            # piper_proc_exec.c provides piper_run_argv used by model_manager.cpp
+            # after the argv-based exec refactor (CodeQL fix).
+            ../piper_proc_exec.c
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+        # model_manager.cpp uses spdlog for logging
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${CMAKE_BINARY_DIR}/fi/lib
+        )
+        if(WIN32)
+            target_link_libraries(${test_name}
+                optimized spdlog.lib
+                debug spdlogd.lib
+                optimized fmt.lib
+                debug fmtd.lib
+            )
+        else()
+            target_link_libraries(${test_name} spdlog fmt)
+            # library_path.c uses dladdr which requires libdl on Linux
+            if(UNIX AND NOT APPLE)
+                target_link_libraries(${test_name} dl)
+            endif()
+        endif()
+    endif()
+
+    # Link additional dependencies for security test
+    if(${test_name} STREQUAL "test_openjtalk_security")
+        target_sources(${test_name} PRIVATE
+            ../openjtalk_wrapper.c
+            ../openjtalk_dictionary_manager.c
+            ../openjtalk_error.c
+            ../piper_proc_exec.c
+            ../openjtalk_security.c
+            ../openjtalk_api.c
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+        find_package(Threads REQUIRED)
+        target_link_libraries(${test_name}
+            Threads::Threads
+        )
+        link_openjtalk_to_test(${test_name})
+    endif()
+
+    # Link additional dependencies for error handling test
+    if(${test_name} STREQUAL "test_openjtalk_error_handling")
+        target_sources(${test_name} PRIVATE
+            ../openjtalk_wrapper.c
+            ../openjtalk_dictionary_manager.c
+            ../openjtalk_error.c
+            ../piper_proc_exec.c
+            ../openjtalk_security.c
+            ../openjtalk_api.c
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+        find_package(Threads REQUIRED)
+        target_link_libraries(${test_name}
+            Threads::Threads
+        )
+        link_openjtalk_to_test(${test_name})
+    endif()
+
+    # Link additional dependencies for optimized test
+    if(${test_name} STREQUAL "test_openjtalk_optimized")
+        target_sources(${test_name} PRIVATE
+            ../openjtalk_wrapper.c
+            ../openjtalk_dictionary_manager.c
+            ../openjtalk_error.c
+            ../piper_proc_exec.c
+            ../openjtalk_security.c
+            ../openjtalk_optimized.c
+            ../openjtalk_api.c
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+        find_package(Threads REQUIRED)
+        target_link_libraries(${test_name}
+            Threads::Threads
+        )
+        link_openjtalk_to_test(${test_name})
+    endif()
+
+    # Link additional dependencies for streaming test
+    # Issue #426: speaker_embedding inference fallback integration test.
+    # Reuses the same piper.cpp + dependency set as test_streaming since it
+    # links the full library to call loadVoice / phonemesToAudio against the
+    # in-tree fixture model.
+    if(${test_name} STREQUAL "test_speaker_embedding_inference" OR
+        ${test_name} STREQUAL "test_streaming")
+        target_sources(${test_name} PRIVATE
+            ../piper.cpp
+            ../phoneme_parser.cpp
+            ../custom_dictionary.cpp
+            ../chinese_loanword.cpp
+            ../model_manager.cpp
+            ../library_path.c
+            ../language_detector.cpp
+            ../english_phonemize.cpp
+            ../chinese_phonemize.cpp
+            ../korean_phonemize.cpp
+            ../spanish_phonemize.cpp
+            ../french_phonemize.cpp
+            ../portuguese_phonemize.cpp
+            ../swedish_phonemize.cpp
+            ../openjtalk_phonemize.cpp
+            ../openjtalk_phonemize_utils.cpp
+            ../openjtalk_wrapper.c
+            ../openjtalk_dictionary_manager.c
+            ../openjtalk_error.c
+            ../piper_proc_exec.c
+            ../openjtalk_security.c
+            ../openjtalk_optimized.c
+            ../openjtalk_api.c
+        )
+
+        # Include directories
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/fi/include
+            ${CMAKE_BINARY_DIR}/si/include
+            ${ORT_INCLUDE_DIR}
+            ${CMAKE_BINARY_DIR}/oj/include
+            ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+        )
+
+        # Add library directories
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/fi/lib
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${ORT_LIB_DIR}
+        )
+
+        # Platform-specific library linking (same as main piper)
+        if(WIN32)
+            # Windows: Link libraries directly
+            target_link_libraries(${test_name}
+                optimized ${CMAKE_BINARY_DIR}/fi/lib/fmt.lib
+                debug ${CMAKE_BINARY_DIR}/fi/lib/fmtd.lib
+                optimized ${CMAKE_BINARY_DIR}/si/lib/spdlog.lib
+                debug ${CMAKE_BINARY_DIR}/si/lib/spdlogd.lib
+                ${ORT_LIB_DIR}/onnxruntime.lib
+            )
+        else()
+            # Unix: Use library names and let CMake find them in link directories
+            target_link_libraries(${test_name}
+                fmt
+                spdlog
+                onnxruntime
+            )
+        endif()
+
+        # Platform-specific linking
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            target_link_libraries(${test_name} Threads::Threads)
+            # library_path.c uses dladdr which requires libdl on Linux
+            if(NOT APPLE)
+                target_link_libraries(${test_name} dl)
+            endif()
+        endif()
+
+        # Link OpenJTalk static library
+        link_openjtalk_to_test(${test_name})
+
+        # Add dependencies to ensure build order
+        add_dependencies(${test_name}
+            fmt_external
+            spdlog_external
+        )
+        # piper.cpp は <onnxruntime_cxx_api.h> を直接 include するため
+        # onnxruntime_external にも明示依存させないと並列ビルドで ORT 展開前に
+        # compile が走り `fatal error: onnxruntime_cxx_api.h: No such file` で
+        # 失敗する。Windows 系は ExternalProject ではなく find_onnxruntime_windows.cmake
+        # 経由で download するため target が存在しない (条件分岐で skip)。
+        if(TARGET onnxruntime_external)
+            add_dependencies(${test_name} onnxruntime_external)
+        endif()
+    endif()
+
+    # Link additional dependencies for streaming test - using same approach as test_piper
+    if(${test_name} STREQUAL "test_streaming_simple")
+        target_sources(${test_name} PRIVATE
+            ../piper.cpp
+            ../phoneme_parser.cpp
+            ../custom_dictionary.cpp
+            ../chinese_loanword.cpp
+            ../model_manager.cpp
+            ../library_path.c
+            ../language_detector.cpp
+            ../english_phonemize.cpp
+            ../chinese_phonemize.cpp
+            ../korean_phonemize.cpp
+            ../spanish_phonemize.cpp
+            ../french_phonemize.cpp
+            ../portuguese_phonemize.cpp
+            ../swedish_phonemize.cpp
+            ../openjtalk_phonemize.cpp
+            ../openjtalk_phonemize_utils.cpp
+            ../openjtalk_wrapper.c
+            ../openjtalk_dictionary_manager.c
+            ../openjtalk_error.c
+            ../piper_proc_exec.c
+            ../openjtalk_security.c
+            ../openjtalk_optimized.c
+            ../openjtalk_api.c
+        )
+
+        # Include directories
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/fi/include
+            ${CMAKE_BINARY_DIR}/si/include
+            ${ORT_INCLUDE_DIR}
+            ${CMAKE_BINARY_DIR}/oj/include
+            ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+        )
+
+        # Add library directories
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/fi/lib
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${ORT_LIB_DIR}
+        )
+
+        # Platform-specific library linking (same as main piper)
+        if(WIN32)
+            # Windows: Link libraries directly
+            target_link_libraries(${test_name}
+                optimized ${CMAKE_BINARY_DIR}/fi/lib/fmt.lib
+                debug ${CMAKE_BINARY_DIR}/fi/lib/fmtd.lib
+                optimized ${CMAKE_BINARY_DIR}/si/lib/spdlog.lib
+                debug ${CMAKE_BINARY_DIR}/si/lib/spdlogd.lib
+                ${ORT_LIB_DIR}/onnxruntime.lib
+            )
+        else()
+            # Unix: Use library names and let CMake find them in link directories
+            target_link_libraries(${test_name}
+                fmt
+                spdlog
+                onnxruntime
+            )
+        endif()
+
+        # Platform-specific linking
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            target_link_libraries(${test_name} Threads::Threads)
+            # library_path.c uses dladdr which requires libdl on Linux
+            if(NOT APPLE)
+                target_link_libraries(${test_name} dl)
+            endif()
+        endif()
+
+        # Link OpenJTalk static library
+        link_openjtalk_to_test(${test_name})
+
+        # Add dependencies to ensure build order
+        add_dependencies(${test_name}
+            fmt_external
+            spdlog_external
+        )
+    endif()
+
+    # Link additional dependencies for prosody inference test
+    if(${test_name} STREQUAL "test_prosody_inference")
+        # Test-only: No additional source files needed (pure unit tests)
+        # Just needs ONNX Runtime headers and libraries
+
+        # Include directories
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/fi/include
+            ${CMAKE_BINARY_DIR}/si/include
+            ${ORT_INCLUDE_DIR}
+        )
+
+        # Add library directories
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/fi/lib
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${ORT_LIB_DIR}
+        )
+
+        # Platform-specific library linking
+        if(WIN32)
+            target_link_libraries(${test_name}
+                ${ORT_LIB_DIR}/onnxruntime.lib
+            )
+        else()
+            target_link_libraries(${test_name}
+                onnxruntime
+            )
+        endif()
+
+        # Platform-specific linking
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            target_link_libraries(${test_name} Threads::Threads)
+        endif()
+    endif()
+
+    # Link additional dependencies for speaker encoder E2E test (Layer 2).
+    # Same shape as test_prosody_inference: pure unit test that #includes
+    # <onnxruntime_cxx_api.h> directly, so it needs ${ORT_INCLUDE_DIR} on the
+    # include path and onnxruntime on the link line.
+    if(${test_name} STREQUAL "test_speaker_encoder_e2e")
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/fi/include
+            ${CMAKE_BINARY_DIR}/si/include
+            ${ORT_INCLUDE_DIR}
+        )
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/fi/lib
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${ORT_LIB_DIR}
+        )
+        if(WIN32)
+            target_link_libraries(${test_name}
+                ${ORT_LIB_DIR}/onnxruntime.lib
+            )
+        else()
+            target_link_libraries(${test_name}
+                onnxruntime
+            )
+        endif()
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            target_link_libraries(${test_name} Threads::Threads)
+        endif()
+    endif()
+
+    # Link additional dependencies for streaming raw phonemes test
+    if(${test_name} STREQUAL "test_streaming_raw_phonemes")
+        target_sources(${test_name} PRIVATE
+            ../piper.cpp
+            ../phoneme_parser.cpp
+            ../custom_dictionary.cpp
+            ../chinese_loanword.cpp
+            ../model_manager.cpp
+            ../library_path.c
+            ../language_detector.cpp
+            ../english_phonemize.cpp
+            ../chinese_phonemize.cpp
+            ../korean_phonemize.cpp
+            ../spanish_phonemize.cpp
+            ../french_phonemize.cpp
+            ../portuguese_phonemize.cpp
+            ../swedish_phonemize.cpp
+            ../openjtalk_phonemize.cpp
+            ../openjtalk_phonemize_utils.cpp
+            ../openjtalk_wrapper.c
+            ../openjtalk_dictionary_manager.c
+            ../openjtalk_error.c
+            ../piper_proc_exec.c
+            ../openjtalk_security.c
+            ../openjtalk_optimized.c
+            ../openjtalk_api.c
+        )
+
+        # Include directories
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/fi/include
+            ${CMAKE_BINARY_DIR}/si/include
+            ${ORT_INCLUDE_DIR}
+            ${CMAKE_BINARY_DIR}/oj/include
+            ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+        )
+
+        # Add library directories
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/fi/lib
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${ORT_LIB_DIR}
+        )
+
+        # Platform-specific library linking (same as main piper)
+        if(WIN32)
+            # Windows: Link libraries directly
+            target_link_libraries(${test_name}
+                optimized ${CMAKE_BINARY_DIR}/fi/lib/fmt.lib
+                debug ${CMAKE_BINARY_DIR}/fi/lib/fmtd.lib
+                optimized ${CMAKE_BINARY_DIR}/si/lib/spdlog.lib
+                debug ${CMAKE_BINARY_DIR}/si/lib/spdlogd.lib
+                ${ORT_LIB_DIR}/onnxruntime.lib
+            )
+        else()
+            # Unix: Use library names and let CMake find them in link directories
+            target_link_libraries(${test_name}
+                fmt
+                spdlog
+                onnxruntime
+            )
+        endif()
+
+        # Platform-specific linking
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            target_link_libraries(${test_name} Threads::Threads)
+            # library_path.c uses dladdr which requires libdl on Linux
+            if(NOT APPLE)
+                target_link_libraries(${test_name} dl)
+            endif()
+        endif()
+
+        # Link OpenJTalk static library
+        link_openjtalk_to_test(${test_name})
+
+        # Add dependencies to ensure build order
+        add_dependencies(${test_name}
+            fmt_external
+            spdlog_external
+        )
+    endif()
+
+    # Link additional dependencies for phoneme parser test
+    if(${test_name} STREQUAL "test_phoneme_parser")
+        target_sources(${test_name} PRIVATE
+            ../phoneme_parser.cpp
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/si/include
+            ${CMAKE_BINARY_DIR}/fi/include
+        )
+        # Add library directories
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${CMAKE_BINARY_DIR}/fi/lib
+        )
+        if(WIN32)
+            target_link_libraries(${test_name}
+                optimized spdlog.lib
+                debug spdlogd.lib
+                optimized fmt.lib
+                debug fmtd.lib
+            )
+        else()
+            target_link_libraries(${test_name}
+                spdlog
+                fmt
+            )
+        endif()
+        # Ensure dependencies are built first
+        add_dependencies(${test_name} spdlog_external fmt_external)
+    endif()
+
+    # Link utils source for N variants and question markers tests
+    if(${test_name} STREQUAL "test_n_variants" OR ${test_name} STREQUAL "test_question_markers")
+        target_sources(${test_name} PRIVATE
+            ../openjtalk_phonemize_utils.cpp
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+    endif()
+
+    # Link additional dependencies for multilingual G2P test
+    if(${test_name} STREQUAL "test_multilingual_g2p")
+        target_sources(${test_name} PRIVATE
+            ../language_detector.cpp
+            ../english_phonemize.cpp
+            ../chinese_phonemize.cpp
+            ../spanish_phonemize.cpp
+            ../french_phonemize.cpp
+            ../portuguese_phonemize.cpp
+            ../swedish_phonemize.cpp
+            ../korean_phonemize.cpp
+            ../phoneme_parser.cpp
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_BINARY_DIR}/si/include
+            ${CMAKE_BINARY_DIR}/fi/include
+            ${ORT_INCLUDE_DIR}
+        )
+        # Add library directories
+        target_link_directories(${test_name} PRIVATE
+            ${CMAKE_BINARY_DIR}/si/lib
+            ${CMAKE_BINARY_DIR}/fi/lib
+        )
+        if(WIN32)
+            target_link_libraries(${test_name}
+                optimized spdlog.lib
+                debug spdlogd.lib
+                optimized fmt.lib
+                debug fmtd.lib
+            )
+        else()
+            target_link_libraries(${test_name}
+                spdlog
+                fmt
+            )
+        endif()
+        # Ensure dependencies are built first
+        add_dependencies(${test_name} spdlog_external fmt_external)
+    endif()
+
+    # Link additional dependencies for Swedish phonemize test
+    if(${test_name} STREQUAL "test_swedish_phonemize")
+        target_sources(${test_name} PRIVATE
+            ../swedish_phonemize.cpp
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+        )
+    endif()
+
+    add_test(NAME ${test_name} COMMAND ${test_name})
+    set_tests_properties(${test_name} PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+endforeach()
+
+# Direct unit tests for piper_proc_exec.c (argv-based process spawn helpers).
+# Self-contained: compiles piper_proc_exec.c directly + links gtest. No other
+# piper-library symbols required. PR #401 introduced these helpers to remove
+# shell-based system()/popen() and clear CodeQL command-line-injection
+# alerts; this test file gives them direct coverage that previously only
+# existed indirectly through model_manager / dictionary_manager.
+add_executable(test_piper_proc_exec
+    test_piper_proc_exec.cpp
+    ../piper_proc_exec.c
+)
+target_include_directories(test_piper_proc_exec PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../
+)
+target_link_libraries(test_piper_proc_exec gtest_main)
+add_test(NAME test_piper_proc_exec COMMAND test_piper_proc_exec)
+set_tests_properties(test_piper_proc_exec PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# Add test_ssml - self-contained SSML parser unit tests + contract fixture parity.
+# Compiles ../ssml.cpp directly + links gtest + json.hpp (header-only). No
+# spdlog/fmt/ORT/OpenJTalk dependency needed (the parser is pure stdlib).
+add_executable(test_ssml
+    test_ssml.cpp
+    ../ssml.cpp
+)
+target_include_directories(test_ssml PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../
+)
+target_link_libraries(test_ssml
+    gtest_main
+)
+add_test(NAME test_ssml COMMAND test_ssml)
+# Run from repo root so the fixture-parity test can locate
+# tests/fixtures/ssml/contract.json via the in-tree search.
+set_tests_properties(test_ssml PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# Add test_phoneme_timing - only uses gtest and json.hpp (no spdlog/fmt)
+add_executable(test_phoneme_timing test_phoneme_timing.cpp)
+target_include_directories(test_phoneme_timing PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../
+)
+target_link_libraries(test_phoneme_timing
+    gtest_main
+)
+
+add_test(NAME test_phoneme_timing COMMAND test_phoneme_timing)
+
+# Cross-runtime phoneme timing parity test.
+# Reads tests/fixtures/phoneme_timing/golden_matrix.json (generated from the
+# Python canonical timing.py) and asserts the spec cursor-walk algorithm in
+# C++ produces matching output. Self-contained: only links gtest + json.hpp,
+# no piper-library dependency.
+add_executable(test_phoneme_timing_parity test_phoneme_timing_parity.cpp)
+target_include_directories(test_phoneme_timing_parity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../
+)
+target_link_libraries(test_phoneme_timing_parity
+    gtest_main
+)
+add_test(NAME test_phoneme_timing_parity COMMAND test_phoneme_timing_parity)
+set_tests_properties(test_phoneme_timing_parity PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# Cross-runtime speaker encoder mel parity test.
+# Reads test/fixtures/speaker_encoder_golden.json (generated from the Python
+# torchaudio reference) and asserts the spec mel pipeline (Hann + slaney mel
+# filterbank + STFT magnitude → log-mel) in C++ produces matching output.
+# Self-contained: only links gtest + json.hpp, no piper-library dependency.
+# (The C API speaker_encoder symbols are EXPERIMENTAL/unimplemented; this
+# test re-implements the spec independently as a forward-compat gate.)
+add_executable(test_speaker_encoder_parity test_speaker_encoder_parity.cpp)
+target_include_directories(test_speaker_encoder_parity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../
+)
+target_link_libraries(test_speaker_encoder_parity
+    gtest_main
+)
+add_test(NAME test_speaker_encoder_parity COMMAND test_speaker_encoder_parity)
+set_tests_properties(test_speaker_encoder_parity PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# Cross-runtime short-text mitigation contract test.
+# Reads tests/fixtures/short_text/contract.json (generated from
+# docs/spec/short-text-contract.toml) and asserts the C++ constants in
+# piper.cpp match the canonical values. Self-contained: only links gtest
+# + json.hpp, no piper-library dependency.
+add_executable(test_short_text_contract test_short_text_contract.cpp)
+target_include_directories(test_short_text_contract PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../
+)
+target_link_libraries(test_short_text_contract
+    gtest_main
+)
+add_test(NAME test_short_text_contract COMMAND test_short_text_contract)
+set_tests_properties(test_short_text_contract PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# Cross-runtime ORT session contract test.
+# Reads tests/fixtures/ort_session/contract.json (generated from
+# docs/spec/ort-session-contract.toml) and asserts the C++ session/warmup
+# constants in piper.cpp match the canonical values that Python/Rust/Go/C#
+# also assert. Self-contained: only links gtest + json.hpp, no piper-library
+# dependency. Cache + env_var rows are pinned to the fixture for
+# forward-compat drift detection (C++ does not implement those features).
+add_executable(test_ort_session_contract test_ort_session_contract.cpp)
+target_include_directories(test_ort_session_contract PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../
+)
+target_link_libraries(test_ort_session_contract
+    gtest_main
+)
+add_test(NAME test_ort_session_contract COMMAND test_ort_session_contract)
+set_tests_properties(test_ort_session_contract PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- test_library_path: library_path.c unit tests ----
+add_executable(test_library_path
+    test_library_path.cpp
+    ../library_path.c
+)
+
+target_link_libraries(test_library_path
+    gtest
+    gtest_main
+)
+
+target_include_directories(test_library_path PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
+# library_path.c uses dladdr which requires libdl on Linux
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_library_path dl)
+endif()
+
+add_test(NAME test_library_path COMMAND test_library_path)
+
+# ---- test_c_api: C API shared library unit tests ----
+# Compiles piper_plus_c_api.cpp directly with piper_common static library.
+# piper_plus_c_api.cpp wraps the full piper:: namespace, so it needs
+# the same dependencies as the streaming tests (onnxruntime, openjtalk, etc.).
+# (issue #377: piper_common is STATIC since iOS toolchain regression.)
+add_executable(test_c_api
+    test_c_api.cpp
+    test_c_api_g2p.cpp
+    ../piper_plus_c_api.cpp
+)
+
+target_link_libraries(test_c_api PRIVATE
+    piper_common
+    gtest
+    gtest_main
+)
+
+target_compile_definitions(test_c_api PRIVATE
+    PIPER_PLUS_BUILDING_DLL
+    _PIPER_VERSION=${piper_version}
+)
+
+# Include directories: piper_plus.h lives in src/cpp/
+target_include_directories(test_c_api PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_BINARY_DIR}/fi/include
+    ${CMAKE_BINARY_DIR}/si/include
+    ${ORT_INCLUDE_DIR}
+    ${CMAKE_BINARY_DIR}/oj/include
+    ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+)
+
+# Library directories
+target_link_directories(test_c_api PRIVATE
+    ${CMAKE_BINARY_DIR}/fi/lib
+    ${CMAKE_BINARY_DIR}/si/lib
+    ${ORT_LIB_DIR}
+)
+
+# Platform-specific library linking
+if(WIN32)
+    target_link_libraries(test_c_api PRIVATE
+        optimized ${CMAKE_BINARY_DIR}/fi/lib/fmt.lib
+        debug ${CMAKE_BINARY_DIR}/fi/lib/fmtd.lib
+        optimized ${CMAKE_BINARY_DIR}/si/lib/spdlog.lib
+        debug ${CMAKE_BINARY_DIR}/si/lib/spdlogd.lib
+        ${ORT_LIB_DIR}/onnxruntime.lib
+    )
+    target_link_libraries(test_c_api PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/openjtalk.lib)
+else()
+    target_link_libraries(test_c_api PRIVATE
+        fmt
+        spdlog
+        onnxruntime
+    )
+    target_link_libraries(test_c_api PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/libopenjtalk.a)
+endif()
+
+# HTS Engine stub
+if(TARGET hts_engine_stub)
+    target_link_libraries(test_c_api PRIVATE hts_engine_stub)
+endif()
+
+# Platform-specific threading
+if(UNIX)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_c_api PRIVATE Threads::Threads)
+    # library_path.c uses dladdr which requires libdl on Linux
+    if(NOT APPLE)
+        target_link_libraries(test_c_api PRIVATE dl)
+    endif()
+endif()
+
+# Build order dependencies
+if(TARGET fmt_external)
+    add_dependencies(test_c_api fmt_external)
+endif()
+if(TARGET spdlog_external)
+    add_dependencies(test_c_api spdlog_external)
+endif()
+if(TARGET openjtalk_external)
+    add_dependencies(test_c_api openjtalk_external)
+endif()
+
+add_test(NAME test_c_api COMMAND test_c_api)
+set_tests_properties(test_c_api PROPERTIES TIMEOUT 60)
+
+# Stage zh_en_loanword.json next to the test_c_api binary so the bundled
+# loanword default-data path (resolved via piper_plus_get_exe_dir() +
+# "/data/zh_en_loanword.json") is populated for the new CApiLoanword
+# round-trip tests. Without this, those tests skip (gracefully) — staging
+# upgrades them from skip to pass.
+add_custom_command(TARGET test_c_api POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:test_c_api>/data
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/src/cpp/data/zh_en_loanword.json
+        $<TARGET_FILE_DIR:test_c_api>/data/zh_en_loanword.json
+    COMMENT "Staging zh_en_loanword.json next to test_c_api"
+)
+
+# ---- test_c_api_integration: C API integration tests (model required) ----
+# Links against the piper_plus shared library (or static lib for embedded build).
+# Uses piper_common static library for the full piper engine. (issue #377)
+add_executable(test_c_api_integration
+    test_c_api_integration.cpp
+    ../piper_plus_c_api.cpp
+)
+
+target_link_libraries(test_c_api_integration PRIVATE
+    piper_common
+    gtest
+    gtest_main
+)
+
+target_compile_definitions(test_c_api_integration PRIVATE
+    PIPER_PLUS_BUILDING_DLL
+    _PIPER_VERSION=${piper_version}
+)
+
+target_include_directories(test_c_api_integration PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_BINARY_DIR}/fi/include
+    ${CMAKE_BINARY_DIR}/si/include
+    ${ORT_INCLUDE_DIR}
+    ${CMAKE_BINARY_DIR}/oj/include
+    ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+)
+
+target_link_directories(test_c_api_integration PRIVATE
+    ${CMAKE_BINARY_DIR}/fi/lib
+    ${CMAKE_BINARY_DIR}/si/lib
+    ${ORT_LIB_DIR}
+)
+
+if(WIN32)
+    target_link_libraries(test_c_api_integration PRIVATE
+        optimized ${CMAKE_BINARY_DIR}/fi/lib/fmt.lib
+        debug ${CMAKE_BINARY_DIR}/fi/lib/fmtd.lib
+        optimized ${CMAKE_BINARY_DIR}/si/lib/spdlog.lib
+        debug ${CMAKE_BINARY_DIR}/si/lib/spdlogd.lib
+        ${ORT_LIB_DIR}/onnxruntime.lib
+    )
+    target_link_libraries(test_c_api_integration PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/openjtalk.lib)
+else()
+    target_link_libraries(test_c_api_integration PRIVATE
+        fmt
+        spdlog
+        onnxruntime
+    )
+    target_link_libraries(test_c_api_integration PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/libopenjtalk.a)
+endif()
+
+if(TARGET hts_engine_stub)
+    target_link_libraries(test_c_api_integration PRIVATE hts_engine_stub)
+endif()
+
+if(UNIX)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_c_api_integration PRIVATE Threads::Threads)
+    # library_path.c uses dladdr which requires libdl on Linux
+    if(NOT APPLE)
+        target_link_libraries(test_c_api_integration PRIVATE dl)
+    endif()
+endif()
+
+if(TARGET fmt_external)
+    add_dependencies(test_c_api_integration fmt_external)
+endif()
+if(TARGET spdlog_external)
+    add_dependencies(test_c_api_integration spdlog_external)
+endif()
+if(TARGET openjtalk_external)
+    add_dependencies(test_c_api_integration openjtalk_external)
+endif()
+
+add_test(NAME test_c_api_integration COMMAND test_c_api_integration)
+
+# Set working directory to project root for model path resolution
+set_tests_properties(test_c_api_integration PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    TIMEOUT 300
+)
+
+# ---- test_c_api_audio_regression: Audio regression tests (M5-21, model required) ----
+# Near-deterministic synthesis output checked for sample count range + RMS energy.
+add_executable(test_c_api_audio_regression
+    test_c_api_audio_regression.cpp
+    ../piper_plus_c_api.cpp
+)
+
+target_link_libraries(test_c_api_audio_regression PRIVATE
+    piper_common
+    gtest
+    gtest_main
+)
+
+target_compile_definitions(test_c_api_audio_regression PRIVATE
+    PIPER_PLUS_BUILDING_DLL
+    _PIPER_VERSION=${piper_version}
+)
+
+target_include_directories(test_c_api_audio_regression PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_BINARY_DIR}/fi/include
+    ${CMAKE_BINARY_DIR}/si/include
+    ${ORT_INCLUDE_DIR}
+    ${CMAKE_BINARY_DIR}/oj/include
+    ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+)
+
+target_link_directories(test_c_api_audio_regression PRIVATE
+    ${CMAKE_BINARY_DIR}/fi/lib
+    ${CMAKE_BINARY_DIR}/si/lib
+    ${ORT_LIB_DIR}
+)
+
+if(WIN32)
+    target_link_libraries(test_c_api_audio_regression PRIVATE
+        optimized ${CMAKE_BINARY_DIR}/fi/lib/fmt.lib
+        debug ${CMAKE_BINARY_DIR}/fi/lib/fmtd.lib
+        optimized ${CMAKE_BINARY_DIR}/si/lib/spdlog.lib
+        debug ${CMAKE_BINARY_DIR}/si/lib/spdlogd.lib
+        ${ORT_LIB_DIR}/onnxruntime.lib
+    )
+    target_link_libraries(test_c_api_audio_regression PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/openjtalk.lib)
+else()
+    target_link_libraries(test_c_api_audio_regression PRIVATE
+        fmt
+        spdlog
+        onnxruntime
+    )
+    target_link_libraries(test_c_api_audio_regression PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/libopenjtalk.a)
+endif()
+
+if(TARGET hts_engine_stub)
+    target_link_libraries(test_c_api_audio_regression PRIVATE hts_engine_stub)
+endif()
+
+if(UNIX)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_c_api_audio_regression PRIVATE Threads::Threads)
+    # library_path.c uses dladdr which requires libdl on Linux
+    if(NOT APPLE)
+        target_link_libraries(test_c_api_audio_regression PRIVATE dl)
+    endif()
+endif()
+
+if(TARGET fmt_external)
+    add_dependencies(test_c_api_audio_regression fmt_external)
+endif()
+if(TARGET spdlog_external)
+    add_dependencies(test_c_api_audio_regression spdlog_external)
+endif()
+if(TARGET openjtalk_external)
+    add_dependencies(test_c_api_audio_regression openjtalk_external)
+endif()
+
+add_test(NAME test_c_api_audio_regression COMMAND test_c_api_audio_regression)
+
+# Set working directory to project root for model path resolution
+set_tests_properties(test_c_api_audio_regression PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    TIMEOUT 300
+)
+
+# ---- test_c_api_concurrent_ja: JA concurrent + Iterator parity stress (Issue #383 follow-up) ----
+# Adds three regression tests:
+#   - ConcurrentJaSynthesis_NoCrash         (4 threads × per-thread engine)
+#   - ConcurrentJaSynthesis_DeterministicLength (length parity within ±20%)
+#   - IteratorVsOneShotJapanese            (JA equivalent of IteratorVsOneShot)
+#
+# These would have caught (a) the C# `MeCabTokenizer` race that Phase 1 missed
+# until commit c567f5be, and (b) the C++ phonemesToAudioFloat sentence-silence
+# regression fixed in a8e776d9. Same dependency set as test_c_api_integration.
+add_executable(test_c_api_concurrent_ja
+    test_c_api_concurrent_ja.cpp
+    ../piper_plus_c_api.cpp
+)
+
+target_link_libraries(test_c_api_concurrent_ja PRIVATE
+    piper_common
+    gtest
+    gtest_main
+)
+
+target_compile_definitions(test_c_api_concurrent_ja PRIVATE
+    PIPER_PLUS_BUILDING_DLL
+    _PIPER_VERSION=${piper_version}
+)
+
+target_include_directories(test_c_api_concurrent_ja PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_BINARY_DIR}/fi/include
+    ${CMAKE_BINARY_DIR}/si/include
+    ${ORT_INCLUDE_DIR}
+    ${CMAKE_BINARY_DIR}/oj/include
+    ${CMAKE_BINARY_DIR}/oj/include/openjtalk
+)
+
+target_link_directories(test_c_api_concurrent_ja PRIVATE
+    ${CMAKE_BINARY_DIR}/fi/lib
+    ${CMAKE_BINARY_DIR}/si/lib
+    ${ORT_LIB_DIR}
+)
+
+if(WIN32)
+    target_link_libraries(test_c_api_concurrent_ja PRIVATE
+        optimized ${CMAKE_BINARY_DIR}/fi/lib/fmt.lib
+        debug ${CMAKE_BINARY_DIR}/fi/lib/fmtd.lib
+        optimized ${CMAKE_BINARY_DIR}/si/lib/spdlog.lib
+        debug ${CMAKE_BINARY_DIR}/si/lib/spdlogd.lib
+        ${ORT_LIB_DIR}/onnxruntime.lib
+    )
+    target_link_libraries(test_c_api_concurrent_ja PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/openjtalk.lib)
+
+    # Issue #383 follow-up: stage onnxruntime.dll next to the test exe so the
+    # Windows DLL loader does not pick up the older System32 onnxruntime.dll
+    # (Windows ML). Mirrors the logic in the standard TEST_SOURCES loop.
+    if(ONNXRUNTIME_DLL)
+        add_custom_command(TARGET test_c_api_concurrent_ja POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ONNXRUNTIME_DLL}"
+                "$<TARGET_FILE_DIR:test_c_api_concurrent_ja>/onnxruntime.dll"
+            COMMENT "Staging onnxruntime.dll next to test_c_api_concurrent_ja"
+        )
+        get_filename_component(_ORT_DLL_DIR "${ONNXRUNTIME_DLL}" DIRECTORY)
+        file(GLOB _ORT_PROVIDER_DLLS "${_ORT_DLL_DIR}/onnxruntime_providers*.dll")
+        foreach(_ort_dll ${_ORT_PROVIDER_DLLS})
+            add_custom_command(TARGET test_c_api_concurrent_ja POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_ort_dll}"
+                    "$<TARGET_FILE_DIR:test_c_api_concurrent_ja>/"
+                COMMENT "Staging ORT provider DLL next to test_c_api_concurrent_ja"
+            )
+        endforeach()
+    endif()
+else()
+    target_link_libraries(test_c_api_concurrent_ja PRIVATE
+        fmt
+        spdlog
+        onnxruntime
+    )
+    target_link_libraries(test_c_api_concurrent_ja PRIVATE ${CMAKE_BINARY_DIR}/oj/lib/libopenjtalk.a)
+endif()
+
+if(TARGET hts_engine_stub)
+    target_link_libraries(test_c_api_concurrent_ja PRIVATE hts_engine_stub)
+endif()
+
+if(UNIX)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_c_api_concurrent_ja PRIVATE Threads::Threads)
+    if(NOT APPLE)
+        target_link_libraries(test_c_api_concurrent_ja PRIVATE dl)
+    endif()
+endif()
+
+if(TARGET fmt_external)
+    add_dependencies(test_c_api_concurrent_ja fmt_external)
+endif()
+if(TARGET spdlog_external)
+    add_dependencies(test_c_api_concurrent_ja spdlog_external)
+endif()
+if(TARGET openjtalk_external)
+    add_dependencies(test_c_api_concurrent_ja openjtalk_external)
+endif()
+
+add_test(NAME test_c_api_concurrent_ja COMMAND test_c_api_concurrent_ja)
+
+# Concurrent threads + JA G2P + 3 sub-tests can take a while in Debug.
+set_tests_properties(test_c_api_concurrent_ja PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    TIMEOUT 300
+)

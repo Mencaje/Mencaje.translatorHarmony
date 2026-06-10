@@ -1,0 +1,76 @@
+[
+
+  { "iso": "ar", "voiceKey": "ar_JO-kareem-medium", "hfPath": "ar/ar_JO/kareem/medium" },
+
+  { "iso": "ca", "voiceKey": "ca_ES-upc_ona-medium", "hfPath": "ca/ca_ES/upc_ona/medium" },
+
+  { "iso": "cs", "voiceKey": "cs_CZ-jirka-medium", "hfPath": "cs/cs_CZ/jirka/medium" },
+
+  { "iso": "cy", "voiceKey": "cy_GB-gwryw_gogleddol-medium", "hfPath": "cy/cy_GB/gwryw_gogleddol/medium" },
+
+  { "iso": "da", "voiceKey": "da_DK-talesyntese-medium", "hfPath": "da/da_DK/talesyntese/medium" },
+
+  { "iso": "de", "voiceKey": "de_DE-thorsten-medium", "hfPath": "de/de_DE/thorsten/medium" },
+
+  { "iso": "el", "voiceKey": "el_GR-rapunzelina-low", "hfPath": "el/el_GR/rapunzelina/low" },
+
+  { "iso": "en", "voiceKey": "en_US-lessac-medium", "hfPath": "en/en_US/lessac/medium" },
+
+  { "iso": "es", "voiceKey": "es_ES-davefx-medium", "hfPath": "es/es_ES/davefx/medium" },
+
+  { "iso": "fa", "voiceKey": "fa_IR-ganji-medium", "hfPath": "fa/fa_IR/ganji/medium" },
+
+  { "iso": "fi", "voiceKey": "fi_FI-harri-medium", "hfPath": "fi/fi_FI/harri/medium" },
+
+  { "iso": "fr", "voiceKey": "fr_FR-siwis-medium", "hfPath": "fr/fr_FR/siwis/medium" },
+
+  { "iso": "hi", "voiceKey": "hi_IN-pratham-medium", "hfPath": "hi/hi_IN/pratham/medium" },
+
+  { "iso": "hu", "voiceKey": "hu_HU-anna-medium", "hfPath": "hu/hu_HU/anna/medium" },
+
+  { "iso": "is", "voiceKey": "is_IS-salka-medium", "hfPath": "is/is_IS/salka/medium" },
+
+  { "iso": "it", "voiceKey": "it_IT-paola-medium", "hfPath": "it/it_IT/paola/medium" },
+
+  { "iso": "ka", "voiceKey": "ka_GE-natia-medium", "hfPath": "ka/ka_GE/natia/medium" },
+
+  { "iso": "kk", "voiceKey": "kk_KZ-issai-high", "hfPath": "kk/kk_KZ/issai/high" },
+
+  { "iso": "lb", "voiceKey": "lb_LU-marylux-medium", "hfPath": "lb/lb_LU/marylux/medium" },
+
+  { "iso": "lv", "voiceKey": "lv_LV-aivars-medium", "hfPath": "lv/lv_LV/aivars/medium" },
+
+  { "iso": "ml", "voiceKey": "ml_IN-meera-medium", "hfPath": "ml/ml_IN/meera/medium" },
+
+  { "iso": "ne", "voiceKey": "ne_NP-google-medium", "hfPath": "ne/ne_NP/google/medium" },
+
+  { "iso": "nl", "voiceKey": "nl_NL-pim-medium", "hfPath": "nl/nl_NL/pim/medium" },
+
+  { "iso": "no", "voiceKey": "no_NO-talesyntese-medium", "hfPath": "no/no_NO/talesyntese/medium" },
+
+  { "iso": "pl", "voiceKey": "pl_PL-darkman-medium", "hfPath": "pl/pl_PL/darkman/medium" },
+
+  { "iso": "pt", "voiceKey": "pt_BR-faber-medium", "hfPath": "pt/pt_BR/faber/medium" },
+
+  { "iso": "ro", "voiceKey": "ro_RO-mihai-medium", "hfPath": "ro/ro_RO/mihai/medium" },
+
+  { "iso": "ru", "voiceKey": "ru_RU-denis-medium", "hfPath": "ru/ru_RU/denis/medium" },
+
+  { "iso": "sk", "voiceKey": "sk_SK-lili-medium", "hfPath": "sk/sk_SK/lili/medium" },
+
+  { "iso": "sl", "voiceKey": "sl_SI-artur-medium", "hfPath": "sl/sl_SI/artur/medium" },
+
+  { "iso": "sr", "voiceKey": "sr_RS-serbski_institut-medium", "hfPath": "sr/sr_RS/serbski_institut/medium" },
+
+  { "iso": "sv", "voiceKey": "sv_SE-lisa-medium", "hfPath": "sv/sv_SE/lisa/medium" },
+
+  { "iso": "sw", "voiceKey": "sw_CD-lanfrica-medium", "hfPath": "sw/sw_CD/lanfrica/medium" },
+
+  { "iso": "tr", "voiceKey": "tr_TR-dfki-medium", "hfPath": "tr/tr_TR/dfki/medium" },
+
+  { "iso": "uk", "voiceKey": "uk_UA-ukrainian_tts-medium", "hfPath": "uk/uk_UA/ukrainian_tts/medium" },
+
+  { "iso": "vi", "voiceKey": "vi_VN-vais1000-medium", "hfPath": "vi/vi_VN/vais1000/medium" }
+
+]
+

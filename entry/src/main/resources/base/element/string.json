@@ -1,0 +1,504 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Mencaje翻译"
+    },
+    {
+      "name": "input_placeholder",
+      "value": "输入文字"
+    },
+    {
+      "name": "paste",
+      "value": "粘贴"
+    },
+    {
+      "name": "label_chinese",
+      "value": "中文"
+    },
+    {
+      "name": "label_russian",
+      "value": "俄语"
+    },
+    {
+      "name": "cd_settings",
+      "value": "设置"
+    },
+    {
+      "name": "cd_camera",
+      "value": "拍照翻译"
+    },
+    {
+      "name": "cd_history",
+      "value": "历史记录"
+    },
+    {
+      "name": "cd_swap_languages",
+      "value": "交换语言"
+    },
+    {
+      "name": "pasteboard_reason",
+      "value": "用于从剪贴板粘贴待翻译文字"
+    },
+    {
+      "name": "cd_back",
+      "value": "返回"
+    },
+    {
+      "name": "cd_copy",
+      "value": "复制"
+    },
+    {
+      "name": "cd_speak",
+      "value": "朗读"
+    },
+    {
+      "name": "settings_title",
+      "value": "设置"
+    },
+    {
+      "name": "settings_open_source",
+      "value": "开源协议"
+    },
+    {
+      "name": "settings_tts_languages",
+      "value": "朗读语言"
+    },
+    {
+      "name": "settings_accessibility",
+      "value": "辅助功能"
+    },
+    {
+      "name": "accessibility_float_translate",
+      "value": "悬浮窗翻译"
+    },
+    {
+      "name": "float_ball_permission_reason",
+      "value": "用于在其它应用上方显示翻译闪控球（悬浮球）。"
+    },
+    {
+      "name": "float_window_permission_title",
+      "value": "开启闪控球权限"
+    },
+    {
+      "name": "float_window_permission_message",
+      "value": "请允许「闪控球」权限。开启后，切换到其它应用时会在屏幕边缘显示翻译悬浮球；点击可返回本应用。"
+    },
+    {
+      "name": "float_window_go_settings",
+      "value": "去设置"
+    },
+    {
+      "name": "float_ball_show_failed",
+      "value": "无法启动闪控球，请确认已授予权限后重试"
+    },
+    {
+      "name": "float_ball_unsupported",
+      "value": "当前设备不支持闪控球功能"
+    },
+    {
+      "name": "float_ball_acl_title",
+      "value": "闪控球需先配置签名 ACL"
+    },
+    {
+      "name": "float_ball_acl_message",
+      "value": "当前安装包未包含闪控球权限（调试 Profile 的 allowed-acls 为空会导致无法安装）。请先在 AppGallery Connect 为调试 Profile 开通 ohos.permission.USE_FLOAT_BALL，换好 .p7b 后按项目 scripts/AGC_闪控球ACL申请.md 恢复 module.json5 权限并重新安装。"
+    },
+    {
+      "name": "float_ball_acl_ok",
+      "value": "知道了"
+    },
+    {
+      "name": "settings_about",
+      "value": "关于应用"
+    },
+    {
+      "name": "settings_nllb_model",
+      "value": "离线翻译模型（NLLB）"
+    },
+    {
+      "name": "nllb_model_ready",
+      "value": "本机 NLLB 已就绪，使用离线翻译"
+    },
+    {
+      "name": "nllb_model_missing",
+      "value": "本机翻译模型未就绪"
+    },
+    {
+      "name": "nllb_ct2_linked",
+      "value": "本机翻译引擎已编入应用"
+    },
+    {
+      "name": "nllb_ct2_not_linked",
+      "value": "本机翻译引擎未编入，请重新编译 HAP"
+    },
+    {
+      "name": "nllb_install_button",
+      "value": "从应用包安装模型"
+    },
+    {
+      "name": "nllb_recheck",
+      "value": "重新检测模型"
+    },
+    {
+      "name": "nllb_install_hint",
+      "value": "完整包：在电脑上运行 prepare_nllb_for_hap.ps1 后 Clean+Rebuild 并重装应用；首次打开会自动解压模型（约 1–3 分钟）。若当前为调试小包，可点击下方「从本机导入模型文件」，一次选中 config.json、model.bin、shared_vocabulary.json、sentencepiece.bpe.model。"
+    },
+    {
+      "name": "nllb_install_success",
+      "value": "离线翻译模型已安装"
+    },
+    {
+      "name": "nllb_install_failed",
+      "value": "安装失败，请查看 HiLog NllbInstall"
+    },
+    {
+      "name": "nllb_install_busy",
+      "value": "正在安装，请稍候"
+    },
+    {
+      "name": "nllb_install_not_bundled",
+      "value": "应用包内未含模型。请打完整 HAP，或使用下方「从本机导入模型文件」。"
+    },
+    {
+      "name": "nllb_dev_slim_hap",
+      "value": "当前为调试小包（未编入模型）。请使用下方「从本机导入模型文件」，或按说明打完整安装包。"
+    },
+    {
+      "name": "nllb_import_button",
+      "value": "从本机导入模型文件"
+    },
+    {
+      "name": "nllb_import_need_files",
+      "value": "请一次选中四个文件：config.json、model.bin、shared_vocabulary.json、sentencepiece.bpe.model"
+    },
+    {
+      "name": "nllb_import_cancelled",
+      "value": "已取消选择文件"
+    },
+    {
+      "name": "settings_footer_hint",
+      "value": "更多选项将在此后续版本提供。"
+    },
+    {
+      "name": "clipboard_empty",
+      "value": "剪贴板没有可复制的内容"
+    },
+    {
+      "name": "copy_done",
+      "value": "已复制"
+    },
+    {
+      "name": "pick_source_language",
+      "value": "原文语言"
+    },
+    {
+      "name": "pick_target_language",
+      "value": "翻译成"
+    },
+    {
+      "name": "lang_picker_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "clear_input",
+      "value": "清空"
+    },
+    {
+      "name": "confirm_translate",
+      "value": "确定"
+    },
+    {
+      "name": "source_lang_chip_auto",
+      "value": "源语言 · %s（自动）· 轻触更正"
+    },
+    {
+      "name": "source_lang_chip_override",
+      "value": "源语言 · %s（已指定）· 轻触重选"
+    },
+    {
+      "name": "source_lang_dual_line",
+      "value": "%s · 对照译至所选语言"
+    },
+    {
+      "name": "pick_detected_source_language",
+      "value": "源语言"
+    },
+    {
+      "name": "same_source_target",
+      "value": "原文语言与目标语言不能相同"
+    },
+    {
+      "name": "translate_failed_title",
+      "value": "翻译失败"
+    },
+    {
+      "name": "speak_not_ready",
+      "value": "Silero 朗读尚未就绪，请稍后再试；也可在「朗读语言」中安装语音包"
+    },
+    {
+      "name": "speak_lang_not_supported",
+      "value": "当前语言暂不支持朗读"
+    },
+    {
+      "name": "tts_speak_failed",
+      "value": "朗读失败，请稍后重试"
+    },
+    {
+      "name": "tts_speak_no_model",
+      "value": "朗读失败：请在「朗读语言」中重新安装该语种（需含推理数据）"
+    },
+    {
+      "name": "tts_speak_engine_not_linked",
+      "value": "朗读失败：未编入推理库。请在开发机运行 scripts/prepare_native_tts.ps1 后 Clean 重编，并用 USB 真机安装（勿用模拟器）"
+    },
+    {
+      "name": "tts_speak_pytorch_not_linked",
+      "value": "朗读失败：请在「朗读语言」安装该语种 Sherpa 语音包；开发机可运行 setup_sherpa_ohos.ps1 -PackRuVoice 等后 Clean 重编"
+    },
+    {
+      "name": "tts_speak_emulator_stub",
+      "value": "当前为 x86 模拟器包：日语未编入 piper-plus。可先试中文/英语；日语需 arm64 真机或 arm64 模拟器"
+    },
+    {
+      "name": "tts_voice_pack_title",
+      "value": "朗读语言"
+    },
+    {
+      "name": "tts_voice_pack_hint",
+      "value": "中文=SummerTTS，日语=piper-plus，俄/英/乌等=RHVoice。安装任一 RHVoice 语种会解压整包。"
+    },
+    {
+      "name": "tts_voice_pack_empty",
+      "value": "暂无 Silero 朗读语言"
+    },
+    {
+      "name": "tts_voice_pack_not_bundled",
+      "value": "安装包内暂无该语种语音数据。请按语种运行对应打包脚本后 Clean 重编并重新安装 HAP"
+    },
+    {
+      "name": "tts_voice_pack_not_bundled_ja",
+      "value": "HAP 内未找到日语包 piperplus_ja_voice.zip。请在开发机运行 scripts/pack_piperplus_ja_rawfile.ps1，再 Clean 重编并安装"
+    },
+    {
+      "name": "tts_voice_install_copy_failed_ja",
+      "value": "日语语音包解压或校验失败。请卸载应用后重装 HAP，或在朗读语言页重新安装"
+    },
+    {
+      "name": "tts_voice_install_confirm_title",
+      "value": "安装离线语音包"
+    },
+    {
+      "name": "tts_voice_install_success",
+      "value": "语音包已安装，可离线朗读"
+    },
+    {
+      "name": "tts_voice_install_data_ok_x86",
+      "value": "语音数据已安装。若仍无法朗读，请确认 HAP 已编入本架构推理库（prepare_native_tts.ps1 后重编）"
+    },
+    {
+      "name": "tts_voice_install_partial",
+      "value": "语音包已保存，但尚未完全就绪，请按提示完成推理库或模型配置"
+    },
+    {
+      "name": "tts_voice_install_partial_missing_infer",
+      "value": "语音包主文件未完整下载，请检查网络后重试安装"
+    },
+    {
+      "name": "tts_voice_need_pytorch_hint",
+      "value": "请安装 RHVoice 语音包；开发机运行 scripts/pack_rhvoice_voices.ps1 并将 libRHVoice.so 放入 entry/libs 后重编"
+    },
+    {
+      "name": "tts_voice_network_failed",
+      "value": "下载失败，请检查网络后重试"
+    },
+    {
+      "name": "tts_voice_mobile_missing",
+      "value": "英语推理数据未就绪：请在开发机运行 fetch 脚本生成 silero_v3_en_mobile.ptl 后重新编译，或安装已内置该文件的版本"
+    },
+    {
+      "name": "tts_voice_need_engine_short",
+      "value": "待推理库"
+    },
+    {
+      "name": "tts_voice_need_engine_hint",
+      "value": "本机未编入 RHVoice：见 scripts/build_rhvoice_ohos.md 编译 libRHVoice.so 后 Clean 重编"
+    },
+    {
+      "name": "tts_voice_need_real_device_short",
+      "value": "缺推理库"
+    },
+    {
+      "name": "tts_voice_need_real_device_hint",
+      "value": "当前 CPU 架构的 HAP 未编入该引擎。请在开发机运行 scripts/prepare_native_tts.ps1（生成 entry/libs/arm64-v8a 与 x86_64），再 Clean 重编并安装"
+    },
+    {
+      "name": "tts_voice_sherpa_en_only",
+      "value": "RHVoice 语种共用 rhvoice_voices.zip，在「朗读语言」安装一次即可朗读对应语言"
+    },
+    {
+      "name": "tts_voice_install_busy",
+      "value": "正在安装其他语音包，请稍候"
+    },
+    {
+      "name": "tts_voice_install_failed",
+      "value": "语音包安装失败，请重试或重新编译安装应用"
+    },
+    {
+      "name": "tts_voice_download_failed",
+      "value": "语音包安装失败，请重试或重新编译安装应用"
+    },
+    {
+      "name": "translate_rate_limit",
+      "value": "在线翻译请求过于频繁（429），请等待 1～2 分钟后再试"
+    },
+    {
+      "name": "translate_offline_failed",
+      "value": "本机翻译失败。若提示 No SGEMM，请用 scripts\\build_ctranslate2_ohos.ps1 重编 libctranslate2.so 后 Clean+Rebuild 安装"
+    },
+    {
+      "name": "translate_ct2_not_linked",
+      "value": "本机翻译库未编入当前安装包。请在 DevEco 中 Clean Project 后重新编译，并重新安装到真机"
+    },
+    {
+      "name": "translate_model_not_ready",
+      "value": "本机 NLLB 未就绪。请打开「设置 → 离线翻译模型」安装或导入模型后再翻译"
+    },
+    {
+      "name": "translate_model_installing",
+      "value": "正在准备本机翻译模型（首次约需数分钟），请稍候再试"
+    },
+    {
+      "name": "translate_model_loading",
+      "value": "正在加载本机翻译模型，请稍候"
+    },
+    {
+      "name": "translate_network_required",
+      "value": "当前通过在线引擎翻译，请保持网络畅通。后续版本将支持本机离线包。"
+    },
+    {
+      "name": "camera_result_title",
+      "value": "Mencaje拍照翻译"
+    },
+    {
+      "name": "camera_section_recognize",
+      "value": "识别文字"
+    },
+    {
+      "name": "camera_section_translation",
+      "value": "译文"
+    },
+    {
+      "name": "camera_permission_reason",
+      "value": "用于拍照翻译时调用系统相机拍摄待识别图片"
+    },
+    {
+      "name": "album_permission_reason",
+      "value": "用于从相册选择一张图片进行拍照翻译"
+    },
+    {
+      "name": "camera_permission_denied",
+      "value": "需要相机权限才能拍照，请在设置中允许"
+    },
+    {
+      "name": "camera_open_failed",
+      "value": "无法打开系统相机，请确认设备支持相机或使用云真机带摄像头机型"
+    },
+    {
+      "name": "camera_unavailable",
+      "value": "当前设备不支持相机能力"
+    },
+    {
+      "name": "album_open_failed",
+      "value": "无法打开相册选择器"
+    },
+    {
+      "name": "album_permission_denied",
+      "value": "需要相册读取权限才能选择图片，请在设置中允许"
+    },
+    {
+      "name": "cd_camera_long_press",
+      "value": "长按从相册选择图片"
+    },
+    {
+      "name": "status_detecting",
+      "value": "正在识别…"
+    },
+    {
+      "name": "ocr_failed",
+      "value": "识别失败"
+    },
+    {
+      "name": "no_text_detected",
+      "value": "未识别到文字"
+    },
+    {
+      "name": "ocr_unavailable",
+      "value": "当前设备不支持文字识别，请使用华为真机（模拟器无 OCR 能力）"
+    },
+    {
+      "name": "about_app_title",
+      "value": "关于应用"
+    },
+    {
+      "name": "about_app_name_label",
+      "value": "本应用名称"
+    },
+    {
+      "name": "about_app_developer_label",
+      "value": "应用开发者名称"
+    },
+    {
+      "name": "about_app_website_label",
+      "value": "品牌总官网"
+    },
+    {
+      "name": "about_app_feedback_email_label",
+      "value": "应用反馈邮箱"
+    },
+    {
+      "name": "about_app_developer_name",
+      "value": "萌创匠盒"
+    },
+    {
+      "name": "about_app_website_url",
+      "value": "https://mencaje.com"
+    },
+    {
+      "name": "about_app_feedback_email",
+      "value": "mengchuangjianghe@outlook.com"
+    },
+    {
+      "name": "oss_screen_title",
+      "value": "开源协议"
+    },
+    {
+      "name": "oss_field_name",
+      "value": "名称"
+    },
+    {
+      "name": "oss_field_license",
+      "value": "协议"
+    },
+    {
+      "name": "oss_field_role",
+      "value": "在本项目中的作用"
+    },
+    {
+      "name": "oss_field_license_url",
+      "value": "开源协议（链接）"
+    },
+    {
+      "name": "oss_field_repo_url",
+      "value": "开源库（链接）"
+    }
+  ]
+}

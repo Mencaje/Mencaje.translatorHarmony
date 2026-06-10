@@ -1,0 +1,726 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'バージョン（例: 1.4.0, 1.4.0.dev1, 1.4.0a1） - タグ名はvを付けて自動生成されます'
+        required: true
+        type: string
+      release_name:
+        description: 'リリース名（未指定の場合は自動生成）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: read
+
+# Serialise tag-driven publish runs against the same ref so a re-tag (or
+# the rare retry from the GitHub UI) cannot race the in-flight publish and
+# double-upload. We do NOT cancel-in-progress: an interrupted publish can
+# leave half-uploaded artefacts on PyPI / NuGet / crates.io that are awkward
+# to clean up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Create Release
+  create_release:
+    name: Create Development Release
+    runs-on: ubuntu-24.04
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_name: ${{ steps.get_release_name.outputs.name }}
+      tag_name: ${{ steps.get_release_name.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          # Allow any version format (including dev, alpha, beta, rc versions)
+          # Examples: 1.4.0, 1.4.0.dev1, 1.4.0a1, 1.4.0b2, 1.4.0rc1
+          echo "Version provided: $VERSION"
+          echo "Version format validation removed - accepting all PEP 440 compatible formats"
+
+      # Update VERSION file first (before validation)
+      - name: Update VERSION file dynamically
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "Updating VERSION file to: $VERSION"
+
+          # Backup original VERSION file
+          if [ -f "VERSION" ]; then
+            cp VERSION VERSION.backup
+            echo "Backed up original VERSION file"
+          fi
+
+          # Update VERSION file with the input version
+          echo "$VERSION" > VERSION
+          echo "✅ VERSION file updated to: $VERSION"
+
+          # Show the change
+          echo "VERSION file contents:"
+          cat VERSION
+
+      # Validate after VERSION file has been updated
+      - name: Validate version consistency across files
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "Checking version consistency for: $VERSION"
+
+          # Check VERSION file (should now match after update)
+          if [ -f "VERSION" ]; then
+            FILE_VERSION=$(cat VERSION | tr -d '\n\r')
+            if [ "$FILE_VERSION" != "$VERSION" ]; then
+              echo "❌ VERSION file has '$FILE_VERSION', expected '$VERSION'"
+              exit 1
+            fi
+            echo "✅ VERSION file: $FILE_VERSION"
+          fi
+
+          # Check pyproject.toml now uses dynamic version
+          if [ -f "pyproject.toml" ]; then
+            if grep -q 'dynamic = \["version"\]' pyproject.toml; then
+              echo "✅ pyproject.toml: Using dynamic version from VERSION file"
+            else
+              echo "❌ pyproject.toml should use dynamic version"
+              exit 1
+            fi
+          fi
+
+          # Note: src/python/piper_train/VERSION is no longer used
+          # All version information is now centralized in the root VERSION file
+
+          # Note: src/python_run/setup.py now reads version from the root VERSION file
+          # Verification is done by checking that the file exists and is readable
+          if [ -f "src/python_run/setup.py" ]; then
+            echo "✅ src/python_run/setup.py: Now uses dynamic version from VERSION file"
+          fi
+
+          echo -e "\n✅ All version files are consistent with version $VERSION"
+
+      - name: Generate release name
+        id: get_release_name
+        run: |
+          if [ -n "${{ github.event.inputs.release_name }}" ]; then
+            echo "name=${{ github.event.inputs.release_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=Release ${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          fi
+
+          echo "tag_name=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: get_release_notes
+        run: |
+          # Auto-generate release notes
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "## 🚀 Release v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "**Build Date:** $(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S JST')" >> $GITHUB_OUTPUT
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+
+          # Get recent commits
+          echo "### 📝 Recent Changes" >> $GITHUB_OUTPUT
+          git log --oneline -10 --pretty=format:"- %s (%h)" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+
+          echo "### 📦 Installation" >> $GITHUB_OUTPUT
+          echo "\`\`\`bash" >> $GITHUB_OUTPUT
+          echo "# Python" >> $GITHUB_OUTPUT
+          echo "pip install piper-plus==${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          # C#/Rust/npm パッケージは独立バージョン管理 — 各 manifest から動的取得
+          CS_VERSION=$(grep -oPm1 '(?<=<Version>)[^<]+' src/csharp/PiperPlus.Cli/PiperPlus.Cli.csproj)
+          echo "# C# (.NET Global Tool) — v${CS_VERSION}" >> $GITHUB_OUTPUT
+          echo "dotnet tool install -g PiperPlus.Cli --version ${CS_VERSION}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          RS_VERSION=$(grep -m1 '^version' src/rust/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "# Rust — v${RS_VERSION}" >> $GITHUB_OUTPUT
+          echo "cargo install piper-plus-cli --version ${RS_VERSION}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          NPM_VERSION=$(node -p "require('./src/wasm/openjtalk-web/package.json').version")
+          echo "# npm (Browser WASM) — v${NPM_VERSION}" >> $GITHUB_OUTPUT
+          echo "npm install piper-plus@${NPM_VERSION}" >> $GITHUB_OUTPUT
+          echo "\`\`\`" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+
+          echo "### 🔗 Links" >> $GITHUB_OUTPUT
+          echo "- [PyPI Package](https://pypi.org/project/piper-plus/${{ github.event.inputs.version }}/)" >> $GITHUB_OUTPUT
+          echo "- [NuGet Package (CLI)](https://www.nuget.org/packages/PiperPlus.Cli)" >> $GITHUB_OUTPUT
+          echo "- [NuGet Package (Core)](https://www.nuget.org/packages/PiperPlus.Core)" >> $GITHUB_OUTPUT
+          echo "- [crates.io Package (CLI)](https://crates.io/crates/piper-plus-cli)" >> $GITHUB_OUTPUT
+          echo "- [crates.io Package (Core)](https://crates.io/crates/piper-plus)" >> $GITHUB_OUTPUT
+          echo "- [npm Package](https://www.npmjs.com/package/piper-plus)" >> $GITHUB_OUTPUT
+          echo "- [Documentation](https://github.com/ayutaz/piper-plus#readme)" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG_NAME="${{ steps.get_release_name.outputs.tag_name }}"
+
+          # Check if tag already exists
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "::warning::Tag $TAG_NAME already exists. Deleting existing release and tag."
+            gh release delete "$TAG_NAME" --yes || true
+            git push origin --delete "$TAG_NAME" || true
+          fi
+
+          # Create release without --json flag (not supported by gh release create)
+          echo "Creating release with tag: $TAG_NAME"
+          gh release create "$TAG_NAME" \
+            --title "${{ steps.get_release_name.outputs.name }}" \
+            --notes "${{ steps.get_release_notes.outputs.body }}" \
+            --draft \
+            --target "${{ github.sha }}" || {
+            echo "::error::Failed to create release"
+            exit 1
+          }
+
+          # Get release information using gh release view with --json
+          echo "Fetching release information..."
+          RELEASE_JSON=$(gh release view "$TAG_NAME" --json id,url,uploadUrl)
+
+          # Parse JSON output to get release information
+          RELEASE_ID=$(echo "$RELEASE_JSON" | jq -r '.id')
+          RELEASE_URL=$(echo "$RELEASE_JSON" | jq -r '.url')
+          UPLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.uploadUrl')
+
+          # Verify we got valid values
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "::error::Failed to get release ID"
+            echo "Response was: $RELEASE_JSON"
+            exit 1
+          fi
+
+          echo "upload_url=${UPLOAD_URL}" >> $GITHUB_OUTPUT
+          echo "release_url=${RELEASE_URL}" >> $GITHUB_OUTPUT
+          echo "release_id=${RELEASE_ID}" >> $GITHUB_OUTPUT
+          echo "✅ Created release: ${RELEASE_URL}"
+
+  # Trigger builds
+  build_all:
+    name: Build All Platforms
+    needs: create_release
+    uses: ./.github/workflows/dev-build-all.yml
+    with:
+      release_upload_url: ${{ needs.create_release.outputs.upload_url }}
+      version: ${{ github.event.inputs.version }}
+    permissions:
+      contents: write
+      packages: read
+
+  # Publish to PyPI
+  publish_pypi:
+    name: Publish to PyPI
+    needs: [build_all]
+    if: |
+      always() &&
+      needs.build_all.result == 'success'
+    runs-on: ubuntu-24.04
+    # Trusted Publishing (PEP 740): PyPI verifies the OIDC token issued to
+    # this job instead of accepting a long-lived API token. This requires
+    # the project to be configured with a "Trusted Publisher" entry on
+    # PyPI matching repository=ayutaz/piper-plus, workflow=dev-create-release.yml,
+    # environment=pypi.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/piper-plus
+    permissions:
+      contents: read
+      id-token: write       # OIDC for PyPI Trusted Publishing
+      attestations: write   # SLSA build provenance attestation
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: wheels-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install twine
+        run: pip install twine
+
+      - name: Check wheels
+        run: |
+          ls -la dist/
+          if ls dist/*.whl 1> /dev/null 2>&1; then
+            twine check dist/*.whl
+          else
+            echo "No wheel files found, skipping check"
+          fi
+
+      - name: Generate SLSA build provenance attestation (wheels)
+        # Attest the exact byte content that PyPI will publish. The
+        # attestation lands in the repo's GitHub attestation store and
+        # can later be verified with `gh attestation verify`.
+        if: hashFiles('dist/*.whl') != ''
+        uses: actions/attest-build-provenance@v3.2.0
+        with:
+          subject-path: 'dist/*.whl'
+
+      - name: Publish to PyPI (Trusted Publisher)
+        # No password env var — the action uses the OIDC id-token to mint
+        # a short-lived PyPI upload credential. PIPY_TOKEN is intentionally
+        # NOT referenced anymore (kept as a fallback secret only for emergency).
+        if: hashFiles('dist/*.whl') != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  # Publish stub package (piper-tts-plus -> piper-plus redirect)
+  publish_pypi_stub:
+    name: Publish PyPI Stub (piper-tts-plus)
+    needs: [publish_pypi]
+    if: |
+      always() &&
+      needs.publish_pypi.result == 'success'
+    runs-on: ubuntu-24.04
+    # Stub package has its own Trusted Publisher entry on PyPI (separate
+    # project name `piper-tts-plus`).
+    environment:
+      name: pypi-stub
+      url: https://pypi.org/p/piper-tts-plus
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Copy VERSION for stub
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "$VERSION" > VERSION
+          cp VERSION src/python_stub/VERSION
+
+      - name: Build stub package
+        working-directory: src/python_stub
+        run: python -m build
+
+      - name: Generate SLSA build provenance attestation (stub)
+        uses: actions/attest-build-provenance@v3.2.0
+        with:
+          subject-path: 'src/python_stub/dist/*'
+
+      - name: Publish stub to PyPI (Trusted Publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: src/python_stub/dist/
+          skip-existing: true
+
+  # C# CLI builds
+  csharp-cli:
+    name: Build C# CLI (${{ matrix.rid }})
+    needs: create_release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            archive_ext: zip
+            cross: false
+          - rid: win-arm64
+            os: windows-latest
+            archive_ext: zip
+            cross: true
+          - rid: linux-x64
+            os: ubuntu-24.04
+            archive_ext: tar.gz
+            cross: false
+          - rid: linux-arm64
+            os: ubuntu-24.04
+            archive_ext: tar.gz
+            cross: true
+          - rid: osx-x64
+            os: macos-14
+            archive_ext: tar.gz
+            cross: true
+          - rid: osx-arm64
+            os: macos-14
+            archive_ext: tar.gz
+            cross: false
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish C# CLI
+        shell: bash
+        run: |
+          PUBLISH_ARGS="-c Release -r ${{ matrix.rid }} --self-contained true"
+          PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishSingleFile=true -p:PublishTrimmed=true"
+          # C# CLI uses its own version from csproj (independent from PyPI version)
+
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishReadyToRun=false"
+          else
+            PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishReadyToRun=true"
+          fi
+
+          dotnet publish src/csharp/PiperPlus.Cli/PiperPlus.Cli.csproj $PUBLISH_ARGS -o publish/
+
+      - name: Create archive (tar.gz)
+        if: matrix.archive_ext == 'tar.gz'
+        run: tar -czf piper-plus-cli-${{ matrix.rid }}.tar.gz -C publish .
+
+      - name: Create archive (zip)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish/* -DestinationPath piper-plus-cli-${{ matrix.rid }}.zip
+
+      - name: Show archive size
+        run: ls -lh piper-plus-cli-${{ matrix.rid }}.${{ matrix.archive_ext }}
+        shell: bash
+
+      - name: Upload Release Asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload "${{ needs.create_release.outputs.tag_name }}" \
+            "piper-plus-cli-${{ matrix.rid }}.${{ matrix.archive_ext }}" \
+            --clobber
+
+  # Publish to NuGet
+  publish_nuget:
+    name: Publish to NuGet
+    needs: create_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write       # required by attest-build-provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Pack NuGet packages
+        run: |
+          # NuGet packages use their own version from csproj (independent from PyPI version)
+          dotnet pack src/csharp/PiperPlus.Core/PiperPlus.Core.csproj \
+            -c Release -o nupkgs/
+          dotnet pack src/csharp/PiperPlus.Cli/PiperPlus.Cli.csproj \
+            -c Release -o nupkgs/
+          echo "Packages created:"
+          ls -lh nupkgs/
+
+      - name: Sign NuGet packages
+        # Code-sign the .nupkg files so consumers can verify authorship
+        # via `nuget verify -All`. Requires the secrets `NuGetSignCert`
+        # (PFX, base64) and `NuGetSignCertPassword`. If neither is set,
+        # we emit a warning and continue — signing is opt-in until the
+        # cert is provisioned (Azure Trusted Signing / Sectigo / etc).
+        env:
+          NUGET_SIGN_CERT_BASE64: ${{ secrets.NuGetSignCert }}
+          NUGET_SIGN_CERT_PASSWORD: ${{ secrets.NuGetSignCertPassword }}
+        run: |
+          if [ -z "$NUGET_SIGN_CERT_BASE64" ] || [ -z "$NUGET_SIGN_CERT_PASSWORD" ]; then
+            echo "::warning::NuGetSignCert / NuGetSignCertPassword secret not set — skipping NuGet code signing. Packages will publish unsigned."
+            exit 0
+          fi
+          echo "$NUGET_SIGN_CERT_BASE64" | base64 -d > /tmp/nuget-sign.pfx
+          for pkg in nupkgs/*.nupkg; do
+            echo "Signing: $pkg"
+            dotnet nuget sign "$pkg" \
+              --certificate-path /tmp/nuget-sign.pfx \
+              --certificate-password "$NUGET_SIGN_CERT_PASSWORD" \
+              --timestamper http://timestamp.digicert.com \
+              || { echo "::error::Failed to sign $pkg"; exit 1; }
+          done
+          rm -f /tmp/nuget-sign.pfx
+          echo "Signed packages:"
+          ls -lh nupkgs/
+
+      - name: Generate SLSA build provenance attestation (NuGet)
+        # Attest the *signed* nupkgs (or unsigned if signing was skipped).
+        # `gh attestation verify` against the published package downloads
+        # the .nupkg and matches it against this attestation.
+        if: hashFiles('nupkgs/*.nupkg') != ''
+        uses: actions/attest-build-provenance@v3.2.0
+        with:
+          subject-path: 'nupkgs/*.nupkg'
+
+      - name: Publish to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -n "$NUGET_API_KEY" ]; then
+            for pkg in nupkgs/*.nupkg; do
+              dotnet nuget push "$pkg" \
+                --api-key "$NUGET_API_KEY" \
+                --source https://api.nuget.org/v3/index.json \
+                --skip-duplicate
+            done
+          else
+            echo "⚠️ NUGET_API_KEY not found, skipping NuGet publish"
+          fi
+
+  # Publish to crates.io
+  publish_crates:
+    name: Publish to crates.io
+    needs: create_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write       # required by attest-build-provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Validate crate version
+        working-directory: src/rust
+        run: |
+          CRATE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          RELEASE_VERSION="${{ github.event.inputs.version }}"
+          echo "Crate version: $CRATE_VERSION"
+          echo "Release version: $RELEASE_VERSION"
+          if [ "$CRATE_VERSION" != "$RELEASE_VERSION" ]; then
+            echo "::notice::Rust crate version ($CRATE_VERSION) differs from release version ($RELEASE_VERSION). Rust packages use independent versioning."
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Package crates (for attestation)
+        # Run `cargo package` ahead of `cargo publish` so the .crate files
+        # exist on disk for attest-build-provenance. cargo publish below
+        # repackages internally but produces byte-identical bundles when
+        # the working tree is unchanged.
+        working-directory: src/rust
+        run: |
+          cargo package -p piper-plus-g2p --allow-dirty
+          cargo package -p piper-plus --allow-dirty
+          cargo package -p piper-plus-cli --allow-dirty
+          echo "Packaged crates:"
+          ls -lh target/package/*.crate
+
+      - name: Generate SLSA build provenance attestation (crates)
+        if: hashFiles('src/rust/target/package/*.crate') != ''
+        uses: actions/attest-build-provenance@v3.2.0
+        with:
+          subject-path: 'src/rust/target/package/*.crate'
+
+      - name: Publish piper-plus-g2p (dependency)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: src/rust
+        run: |
+          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
+            set +e
+            OUTPUT=$(cargo publish -p piper-plus-g2p --allow-dirty 2>&1)
+            STATUS=$?
+            set -e
+            echo "$OUTPUT"
+            if [ "$STATUS" -ne 0 ]; then
+              if echo "$OUTPUT" | grep -q "already uploaded\|already exists"; then
+                echo "⚠️ piper-plus-g2p already published on crates.io (continuing)"
+              else
+                echo "::error::Failed to publish piper-plus-g2p to crates.io"
+                exit "$STATUS"
+              fi
+            fi
+            # Wait for crates.io index to update
+            sleep 30
+          else
+            echo "⚠️ CARGO_REGISTRY_TOKEN not found, skipping crates.io publish"
+          fi
+
+      - name: Publish piper-plus (core)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: src/rust
+        run: |
+          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
+            set +e
+            OUTPUT=$(cargo publish -p piper-plus --allow-dirty 2>&1)
+            STATUS=$?
+            set -e
+            echo "$OUTPUT"
+            if [ "$STATUS" -ne 0 ]; then
+              if echo "$OUTPUT" | grep -q "already uploaded\|already exists"; then
+                echo "⚠️ piper-plus version already published on crates.io (continuing)"
+              else
+                echo "::error::Failed to publish piper-plus to crates.io"
+                exit "$STATUS"
+              fi
+            fi
+          else
+            echo "⚠️ CARGO_REGISTRY_TOKEN not found, skipping crates.io publish"
+          fi
+
+      - name: Publish piper-plus-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: src/rust
+        run: |
+          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
+            # Wait for crates.io index to update
+            sleep 30
+            set +e
+            OUTPUT=$(cargo publish -p piper-plus-cli --allow-dirty 2>&1)
+            STATUS=$?
+            set -e
+            echo "$OUTPUT"
+            if [ "$STATUS" -ne 0 ]; then
+              if echo "$OUTPUT" | grep -q "already uploaded\|already exists"; then
+                echo "⚠️ piper-plus-cli version already published on crates.io (continuing)"
+              else
+                echo "::error::Failed to publish piper-plus-cli to crates.io"
+                exit "$STATUS"
+              fi
+            fi
+          else
+            echo "⚠️ CARGO_REGISTRY_TOKEN not found, skipping crates.io publish"
+          fi
+
+  # Rust CLI builds
+  rust-cli:
+    name: Build Rust CLI (${{ matrix.target }})
+    needs: create_release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact: piper-plus-rs-cli-linux-x64
+            archive_ext: tar.gz
+            cross: false
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: piper-plus-rs-cli-osx-arm64
+            archive_ext: tar.gz
+            cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: piper-plus-rs-cli-win-x64
+            archive_ext: zip
+            cross: false
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml << 'TOML'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          TOML
+          echo "Cargo config:"
+          cat ~/.cargo/config.toml
+
+      - name: Build release binary
+        working-directory: src/rust
+        run: cargo build --release -p piper-plus-cli --target ${{ matrix.target }}
+
+      - name: Create archive (tar.gz)
+        if: matrix.archive_ext == 'tar.gz'
+        working-directory: src/rust
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/piper-plus-cli staging/
+          tar -czf ${{ matrix.artifact }}.tar.gz -C staging .
+
+      - name: Create archive (zip)
+        if: matrix.archive_ext == 'zip'
+        working-directory: src/rust
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force staging
+          Copy-Item target/${{ matrix.target }}/release/piper-plus-cli.exe staging/
+          Compress-Archive -Path staging/* -DestinationPath ${{ matrix.artifact }}.zip
+
+      - name: Show archive size
+        shell: bash
+        working-directory: src/rust
+        run: ls -lh ${{ matrix.artifact }}.${{ matrix.archive_ext }}
+
+      - name: Upload Release Asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.create_release.outputs.tag_name }}" \
+            "src/rust/${{ matrix.artifact }}.${{ matrix.archive_ext }}" \
+            --clobber
+
+  # Final summary
+  release_summary:
+    name: Release Summary
+    runs-on: ubuntu-24.04
+    needs: [create_release, build_all, publish_pypi, publish_pypi_stub, publish_nuget, publish_crates, csharp-cli, rust-cli]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## Release Summary"
+          echo ""
+          echo "**Release Name:** ${{ needs.create_release.outputs.release_name }}"
+          echo "**Tag:** ${{ needs.create_release.outputs.tag_name }}"
+          echo ""
+          echo "### Build Status"
+          echo "- Create Release: ${{ needs.create_release.result }}"
+          echo "- Build All: ${{ needs.build_all.result }}"
+          echo "- Publish PyPI: ${{ needs.publish_pypi.result }}"
+          echo "- Publish PyPI Stub: ${{ needs.publish_pypi_stub.result }}"
+          echo "- Publish NuGet: ${{ needs.publish_nuget.result }}"
+          echo "- Publish crates.io: ${{ needs.publish_crates.result }}"
+          echo "- C# CLI: ${{ needs.csharp-cli.result }}"
+          echo "- Rust CLI: ${{ needs.rust-cli.result }}"
+          echo ""
+
+          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- C++/Python Build: ${{ needs.build_all.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- PyPI: ${{ needs.publish_pypi.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- PyPI Stub: ${{ needs.publish_pypi_stub.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- NuGet: ${{ needs.publish_nuget.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- crates.io: ${{ needs.publish_crates.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- C# CLI: ${{ needs.csharp-cli.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Rust CLI: ${{ needs.rust-cli.result }}" >> $GITHUB_STEP_SUMMARY

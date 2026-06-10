@@ -1,0 +1,44 @@
+# Build outputs
+# dist/ # Need to include dist for GitHub Pages deployment
+
+# Rust WASM build output (~58MB binary, built fresh by CI)
+# - npm-publish.yml: builds before `npm publish`
+# - deploy-webassembly-demo.yml: builds before GitHub Pages deploy
+# Do NOT track in git; each CI workflow builds it from src/rust/piper-wasm.
+dist/rust-wasm/
+build/build-*/
+build/CMakeFiles/
+build/CMakeCache.txt
+build/cmake_install.cmake
+build/Makefile
+
+# Downloaded models (large files)
+models/*.onnx
+!models/.gitkeep
+!models/multilingual-test-medium.onnx
+!models/multilingual-test-medium.onnx.json
+
+# Node modules (if any get added)
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*~
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Downloaded tools (separate git repositories)
+tools/hts_engine_API/
+tools/wasm_open_jtalk/
+wasm_open_jtalk_reference/

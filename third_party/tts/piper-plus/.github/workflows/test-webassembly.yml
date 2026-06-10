@@ -1,0 +1,225 @@
+name: Test WebAssembly
+
+# 最小権限 (least privilege): test / report のみ、 書込不要。
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ dev ]
+    paths:
+      - 'src/wasm/**'
+      - 'tests/fixtures/phoneme_timing/**'
+      - 'tests/fixtures/short_text/**'
+      - 'tests/fixtures/ort_session/**'
+      - 'test/fixtures/speaker_encoder_golden.json'
+      - '.github/workflows/test-webassembly.yml'
+  pull_request:
+    branches: [ dev ]
+    paths:
+      - 'src/wasm/**'
+      - 'tests/fixtures/phoneme_timing/**'
+      - 'tests/fixtures/short_text/**'
+      - 'tests/fixtures/ort_session/**'
+      - 'test/fixtures/speaker_encoder_golden.json'
+      - '.github/workflows/test-webassembly.yml'
+
+env:
+  NODE_VERSION: '24.x'
+
+jobs:
+  test-openjtalk-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        submodules: recursive
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6.4.0
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup Emscripten
+      uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021  # v14
+      with:
+        version: '3.1.47'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential
+
+    - name: Create build scripts
+      working-directory: src/wasm/openjtalk-web
+      run: |
+        # Create a simple build script that doesn't require wasm_open_jtalk
+        mkdir -p dist
+        cat > build-ci.sh << 'EOF'
+        #!/bin/bash
+        echo "=== CI Build for OpenJTalk WebAssembly ==="
+        echo "Creating placeholder files for CI testing..."
+
+        # Create placeholder JavaScript module
+        cat > dist/openjtalk.js << 'JSEOF'
+        // Placeholder OpenJTalk module for CI
+        export default function OpenJTalkModule(config) {
+          return Promise.resolve({
+            FS: { mkdir: () => {}, writeFile: () => {} },
+            _openjtalk_initialize: () => 0,
+            _openjtalk_synthesis_labels: () => 0,
+            _openjtalk_free_string: () => {},
+            _openjtalk_clear: () => {},
+            allocateUTF8: () => 0,
+            UTF8ToString: () => "labels",
+            _free: () => {}
+          });
+        }
+        JSEOF
+
+        # Create placeholder WASM file
+        echo "Placeholder WASM content" > dist/openjtalk.wasm
+
+        echo "Build complete!"
+        ls -la dist/
+        EOF
+
+        chmod +x build-ci.sh
+        ./build-ci.sh
+
+    - name: Verify build outputs
+      working-directory: src/wasm/openjtalk-web
+      run: |
+        ls -la dist/
+        test -f dist/openjtalk.js
+        test -f dist/openjtalk.wasm
+        echo "Build outputs verified"
+
+    # Fast pre-flight: types/index.d.ts auto-gen drift gate.
+    # Runs before any heavy WASM/test setup so drift fails fast (~1 sec) with
+    # a clear `npm run regenerate:types` fix command. Eliminates the previous
+    # symptom-treatment cycle where types-vs-src drift was caught minutes
+    # later inside test-npm-package.js with an unclear error message.
+    - name: Check types/index.d.ts auto-gen consistency
+      working-directory: src/wasm/openjtalk-web
+      run: npm run check:types
+
+    - name: Run import map validation tests
+      working-directory: src/wasm/openjtalk-web
+      run: node --test test/js/test-importmap.js
+
+    - name: Install npm dependencies (with local @piper-plus/g2p)
+      working-directory: src/wasm/openjtalk-web
+      run: npm install "@piper-plus/g2p@file:../g2p"
+
+    - name: Run PiperPlus G2P integration tests
+      working-directory: src/wasm/openjtalk-web
+      run: |
+        node --test test/js/test-piper-plus-g2p-init.js
+        node --test test/js/test-piper-plus-wasm-g2p.js
+
+    - name: Run openjtalk-web unit tests (with coverage)
+      working-directory: src/wasm/openjtalk-web
+      run: |
+        npx c8 --reporter=lcov --reporter=text \
+          node --test \
+          test/js/test-piper-plus.js \
+          test/js/test-piper-plus-init-success.js \
+          test/js/test-piper-plus-boundary.js \
+          test/js/test-piper-plus-synthesize-flow.js \
+          test/js/test-piper-plus-init-integration.js \
+          test/js/test-npm-package.js \
+          test/js/test-audio-result.js \
+          test/js/test-audio-result-wav-edge.js \
+          test/js/test-model-manager.js \
+          test/js/test-model-manager-load.js \
+          test/js/test-model-manager-boundary.js \
+          test/js/test-model-manager-cache.js \
+          test/js/test-dictionary-cache.js \
+          test/js/test-g2p-golden.js
+
+    - name: Upload coverage to Codecov (wasm)
+      uses: codecov/codecov-action@v5.5.4
+      if: always()
+      with:
+        files: src/wasm/openjtalk-web/coverage/lcov.info
+        flags: wasm
+        fail_ci_if_error: false
+
+    - name: Run @piper-plus/g2p tests (with coverage)
+      working-directory: src/wasm/g2p
+      run: |
+        npm install
+        npm run test:coverage
+
+    - name: Upload coverage to Codecov (g2p-wasm)
+      uses: codecov/codecov-action@v5.5.4
+      if: always()
+      with:
+        files: src/wasm/g2p/coverage/lcov.info
+        flags: g2p-wasm
+        fail_ci_if_error: false
+
+    - name: Run optimization and advanced tests
+      working-directory: src/wasm/openjtalk-web
+      run: |
+        node --test \
+          test/js/test-audio-backend.js \
+          test/js/test-audio-regression.js \
+          test/js/test-benchmark-runner.js \
+          test/js/test-cache-manager.js \
+          test/js/test-edge-cases.js \
+          test/js/test-memory-pool.js \
+          test/js/test-phase2-integration.js \
+          test/js/test-resampler.js \
+          test/js/test-streaming-pipeline.js \
+          test/js/test-webgpu-session.js
+
+    - name: Run timing & short-text tests (Issue #346 / phoneme-timing-contract)
+      working-directory: src/wasm/openjtalk-web
+      run: |
+        node --test \
+          test/js/test-audio-result-timing.js \
+          test/js/test-phoneme-timing.js \
+          test/js/test-piper-plus-timing.js \
+          test/js/test-short-text-mitigation.js \
+          test/js/test-phoneme-timing-parity.js \
+          test/js/test-short-text-contract.js \
+          test/js/test-speaker-encoder-parity.js \
+          test/js/test-ort-session-contract.js
+
+    - name: Check file sizes
+      working-directory: src/wasm/openjtalk-web
+      run: |
+        echo "Build artifact sizes:"
+        ls -lh dist/openjtalk.js dist/openjtalk.wasm
+
+        # Check that files are reasonably sized
+        wasm_size=$(stat -c%s dist/openjtalk.wasm)
+        js_size=$(stat -c%s dist/openjtalk.js)
+
+        echo "WASM size: $wasm_size bytes"
+        echo "JS size: $js_size bytes"
+
+        # Fail if WASM is larger than 1MB (reasonable for OpenJTalk)
+        if [ $wasm_size -gt 1048576 ]; then
+          echo "ERROR: WASM file is larger than 1MB"
+          exit 1
+        fi
+
+        # Fail if JS is larger than 100KB
+        if [ $js_size -gt 102400 ]; then
+          echo "ERROR: JS file is larger than 100KB"
+          exit 1
+        fi
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v7.0.1
+      if: always()
+      with:
+        name: openjtalk-web-build
+        path: |
+          src/wasm/openjtalk-web/dist/
+        retention-days: 7

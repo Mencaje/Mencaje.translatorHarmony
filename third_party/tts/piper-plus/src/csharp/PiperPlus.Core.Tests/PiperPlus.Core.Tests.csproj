@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PiperPlus.Core.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTrimmable>false</IsTrimmable>
+    <!-- Test assembly never goes through trimming/AOT, so reflection-based
+         JSON deserialization is safe and matches developer expectations.
+         Overrides Directory.Build.props which disables it for production. -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.3" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PiperPlus.Core\PiperPlus.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Cross-runtime test fixtures (copied to test output, read by Tests). -->
+  <ItemGroup>
+    <Content Include="..\..\..\tests\fixtures\short_text\contract.json">
+      <Link>TestData\short_text_contract.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\..\tests\fixtures\text_splitter\contract.json">
+      <Link>TestData\text_splitter_contract.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

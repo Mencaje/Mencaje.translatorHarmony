@@ -1,0 +1,69 @@
+{
+    "ja_JP-tsukuyomi-chan-medium": {
+        "key": "ja_JP-tsukuyomi-chan-medium",
+        "name": "tsukuyomi-chan",
+        "language": {
+            "code": "ja_JP",
+            "family": "ja",
+            "region": "JP",
+            "name_native": "日本語",
+            "name_english": "Japanese",
+            "country_english": "Japan"
+        },
+        "quality": "medium",
+        "num_speakers": 1,
+        "speaker_id_map": {},
+        "source": "piper-plus",
+        "repo": "ayousanz/piper-plus-tsukuyomi-chan",
+        "files": {
+            "tsukuyomi-chan-6lang-fp16.onnx": {
+                "size_bytes": 39652717,
+                "md5_digest": ""
+            },
+            "config.json": {
+                "size_bytes": 6279,
+                "md5_digest": ""
+            }
+        },
+        "aliases": [
+            "tsukuyomi",
+            "tsukuyomi-chan",
+            "ja-tsukuyomi"
+        ],
+        "description": "Tsukuyomi-chan 6-language TTS model fine-tuned from multilingual base (FP16, MB-iSTFT)"
+    },
+    "ja_JP-css10-6lang-medium": {
+        "key": "ja_JP-css10-6lang-medium",
+        "name": "css10-6lang",
+        "language": {
+            "code": "ja_JP",
+            "family": "ja",
+            "region": "JP",
+            "name_native": "日本語",
+            "name_english": "Japanese",
+            "country_english": "Japan"
+        },
+        "quality": "medium",
+        "num_speakers": 1,
+        "speaker_id_map": {},
+        "source": "piper-plus",
+        "repo": "ayousanz/piper-plus-css10-ja-6lang",
+        "files": {
+            "css10-ja-6lang-fp16.onnx": {
+                "size_bytes": 39652717,
+                "md5_digest": ""
+            },
+            "config.json": {
+                "size_bytes": 5912,
+                "md5_digest": ""
+            }
+        },
+        "aliases": [
+            "css10",
+            "css10-6lang",
+            "css10-ja",
+            "ja-css10"
+        ],
+        "description": "CSS10 Japanese 6-language TTS model fine-tuned from multilingual base (FP16, MB-iSTFT, 6841 utterances)"
+    }
+}

@@ -1,0 +1,46 @@
+/node_modules
+/oh_modules
+/local.properties
+/build-profile.json5
+*.p12
+*.p7b
+*.cer
+*.csr
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+# Silero TTS 模型体积大，本地用 scripts/fetch_silero_rawfile_models.ps1 下载
+entry/src/main/resources/rawfile/silero_*.pt
+entry/src/main/resources/rawfile/silero_*.jit
+entry/src/main/resources/rawfile/silero_tts_models.zip
+entry/src/main/resources/rawfile/nllb200_distilled_600m.zip
+entry/src/main/resources/rawfile/summer_single_speaker_fast.bin
+entry/src/main/resources/rawfile/piper_*_voice.zip
+entry/src/main/resources/rawfile/piperplus_ja_voice.zip
+entry/src/main/resources/rawfile/espeakdata.zip
+entry/src/main/resources/resfile/
+third_party/silero_lj_16000.jit
+third_party/tts/SummerTTS/models/*.bin
+third_party/ohos/piperplus_pack_work/
+third_party/models/
+# Android 参考工程（非 HarmonyOS 构建产物）
+/Mencaje.translator/
+# 临时图片与构建日志
+*_removalai_preview.png
+build_log*.txt
+*.jpg
+.venv_silero_onnx/
+entry/libs/
+# 已停用的 legacy 预编译体积（构建脚本可重新下载）
+third_party/ohos/pytorch_android/
+third_party/ohos/libtorch/
+third_party/ohos/sherpa/
+third_party/ohos/onnxruntime/prebuilt/
+third_party/ohos/piper_voices/
+third_party/rhvoice/

@@ -1,0 +1,6 @@
+{
+  "name": "libsilero_tts_napi.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "Silero TTS NAPI bridge for HarmonyOS (C++, no system TTS)"
+}

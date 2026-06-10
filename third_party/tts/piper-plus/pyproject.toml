@@ -1,0 +1,478 @@
+[build-system]
+requires = ["setuptools>=80.10.2", "wheel", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# NOTE: この root project は uv workspace の管理用 meta package。
+# PyPI へは publish せず (`[tool.uv] package = false` 参照)、
+# canonical な `piper-plus` パッケージは `src/python_run/` から build される。
+# Issue #418: src/python_run を workspace member 化する際の name 衝突を回避するため
+# root を `piper-plus-workspace` に rename した。
+name = "piper-plus-workspace"
+dynamic = ["version"]
+description = "Development workspace for piper-plus (not published; canonical piper-plus is built from src/python_run)"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "huggingface-hub>=0.36.2,<1.0",
+    "numpy<2.5",
+    "tensorboard>=2.20.0",
+    "g2p-en>=2.1.0",
+    "torch>=2.11.0",
+    "torchaudio>=2.1.0",
+    "pytorch-lightning>=2.0",
+    "librosa>=0.10",
+    "cython>=3.2.4",
+    "pyopenjtalk-plus>=0.4",
+    "wandb>=0.26.1",
+    "transformers>=4.30",
+    # workspace member refs: `uv sync` でこれらが自動 install される (root は
+    # `package = false` なのでこの dependencies は実 install でなく resolver
+    # の入力として機能)。Issue #418 で `piper-plus` を新規 member 化したため
+    # 明示。 piper-plus-g2p は piper-train の依存として間接的に install される。
+    "piper-train[train]",
+    "piper-plus",
+    "onnxscript>=0.7.0",
+    "onnxruntime>=1.17",
+    "ghapi>=1.0.13",
+    "onnx>=1.21.0",
+]
+
+[project.optional-dependencies]
+# piper-phonemize 1.1.0 only publishes macOS x86_64 wheels for CPython
+# 3.11 / 3.12 (no sdist, no Linux/Windows wheel, no Apple Silicon wheel,
+# no cp313 wheel), so every other interpreter/platform fails hard. The
+# marker restricts the dependency to exactly that matrix — sys_platform
+# AND platform_machine AND python_version — so it is never even attempted
+# elsewhere and `uv sync --all-extras` succeeds by skipping it (QA finding
+# F5). Dataset preprocessing via piper-phonemize is therefore macOS-x86_64
+# + Python 3.11/3.12 only; piper-plus' own G2P does not need it.
+preprocess = [
+    "piper-phonemize>=1.1.0; sys_platform == 'darwin' and platform_machine == 'x86_64' and python_version < '3.13'",
+]
+
+inference = [
+    "onnxruntime>=1.17",
+    "soundfile>=0.12",
+    "pyopenjtalk-plus",
+    "g2p-en>=2.1.0",
+    "fastapi>=0.136.1",
+    "uvicorn>=0.27",
+]
+
+inference-gpu = [
+    "onnxruntime-gpu>=1.17",
+    "soundfile>=0.12",
+    "pyopenjtalk-plus",
+    "g2p-en>=2.1.0",
+    "fastapi>=0.136.1",
+    "uvicorn>=0.27",
+]
+
+multilingual = [
+    "pypinyin>=0.50",
+    "g2pk2>=0.0.3",
+]
+
+train = [
+    "scipy>=1.17.1",
+    "librosa>=0.10",
+    "soundfile>=0.12",
+    "pytorch-lightning>=2.0",
+    "torchmetrics>=1.9.0",
+    "transformers>=4.38",
+    "onnx>=1.21.0",
+    "onnxruntime>=1.17",
+    "pyopenjtalk-plus",
+    "mecab-python3>=1.0",
+    "unidic-lite>=1.0",
+    "g2p-en>=2.1.0",
+    "tensorboard>=2.16",
+    "wandb>=0.26.1",
+    "tqdm>=4.67.3",
+    "einops>=0.7",
+    "numba>=0.59",
+    "matplotlib>=3.10.9",
+    "seaborn>=0.13",
+    "pyyaml>=6.0.3",
+    "onnxsim-prebuilt",
+]
+
+dev = [
+    "black==26.3.1",
+    "flake8==6.1.0",
+    "mypy>=1.20.2",
+    "pylint==3.3.9",
+    "ruff==0.15.12",
+    "pytest>=9.0.3,<10",
+    "pytest-cov==4.1.0",
+    "pytest-xdist==3.8.0",
+    "pytest-timeout==2.4.0",
+    "pytest-mock==3.15.1",
+    "pytest-asyncio>=0.24",  # NEW: async FastAPI tests
+    "coverage[toml]>=7.14.0",
+    "types-requests==2.33.0.20260508",
+    "types-PyYAML==6.0.12",
+    "sphinx>=4.0.0",
+    "sphinx-rtd-theme>=3.1.0",
+    "pre-commit>=4.6.0",
+    # Mutation testing (manual / weekly CI 専用、push 毎には走らせない)。
+    # 設定: .mutmut.toml / docs/reference/mutation-testing.md。
+    # 通常は `uvx mutmut run` で十分だが、dev 環境の declarative source として pin。
+    "mutmut>=2.4,<3",
+]
+
+test = [
+    "pytest>=9.0.3,<10",
+    "pytest-cov==4.1.0",
+    "pytest-xdist==3.8.0",
+    "pytest-timeout==2.4.0",
+    "pytest-mock==3.15.1",
+    "pytest-asyncio>=0.24",  # NEW: async FastAPI tests
+    "coverage[toml]>=7.14.0",
+    "ruff==0.15.12",
+    "mypy>=1.20.2",
+    "types-requests==2.33.0.20260508",
+    "types-PyYAML==6.0.12",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+piper-train = { workspace = true, editable = true }
+piper-plus-g2p = { workspace = true, editable = true }
+piper-plus = { workspace = true, editable = true }
+
+[tool.uv.workspace]
+members = [
+    "src/python",
+    "src/python/g2p",
+    "src/python_run",
+]
+
+[tool.uv]
+# root は workspace 管理用 meta package。`package = false` で root 自体を
+# install/build 対象から外す (Issue #418、 src/python_run と name が衝突しない
+# よう root を `piper-plus-workspace` にした上で非 install 化)。
+package = false
+dev-dependencies = [
+    "ruff==0.15.12",
+    "pytest>=9.0.3,<10",
+    "pytest-timeout>=2.2.0",
+    "black==26.3.1",
+    "fastapi>=0.135.1",
+    "httpx>=0.28.1",
+    # OpenAI SDK for end-to-end tests against /v1/audio/speech via
+    # docker/python-inference/test_openai_api.py::TestOpenAISDKEndToEnd. Tests
+    # auto-skip when the SDK is not installed; this entry just ensures uv-managed
+    # dev environments and CI runners pick it up.
+    "openai>=1.50.0",
+]
+
+[tool.ruff]
+# Ruffの基本設定
+line-length = 88  # blackと同じ行長
+target-version = "py311"  # Python 3.11以降をターゲット
+
+# 除外するファイルとディレクトリ
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+    "src/python/piper_train/vits/monotonic_align",  # Cython generated
+    # Temporary debug/test scripts in root directory
+    "check_*.py",
+    "debug_*.py",
+    "test_*.py",
+    "analyze_*.py",
+    "verify_*.py",
+    "export_*.sh",
+]
+
+[tool.ruff.lint]
+# 有効にするルール
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "ARG",  # flake8-unused-arguments
+    "PL",   # pylint
+    "S",    # flake8-bandit (security)
+    "PERF", # perflint (performance anti-patterns)
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+
+# 除外するルール
+ignore = [
+    "E501",  # line too long (blackが処理)
+    "PLR0913",  # Too many arguments to function call
+    "PLR2004",  # Magic value used in comparison
+    "PLR0912",  # Too many branches
+    "PLR0915",  # Too many statements
+    "PLR0911",  # Too many return statements
+    "ARG001",  # Unused function argument
+    "ARG002",  # Unused method argument
+    "PLW2901",  # Redefined loop name
+    # bandit: ノイジーすぎるルールの段階的緩和 (将来的に解消予定)
+    "S101",  # use of assert (テストで多用される)
+    "S104",  # hardcoded bind all interfaces (HTTP server で 0.0.0.0 を意図的に使用)
+    "S105",  # hardcoded password (false positive: token / phoneme symbol 等)
+    "S107",  # hardcoded password default (同上)
+    "S110",  # try-except-pass (graceful degradation で意図的)
+    "S301",  # pickle (内部信頼チェックポイントで使用)
+    "S310",  # suspicious URL open (HF Hub / model download で必要)
+    "S311",  # pseudo-random generators (TTS noise/sampling 用途は cryptographic でない)
+    "S324",  # insecure hashlib (md5/sha1 を cache key 用途で使用、暗号用途ではない)
+    "S603",  # subprocess call: 内部スクリプト実行で必要
+    "S607",  # subprocess with partial path: 内部スクリプト実行で必要
+    # SIM: 段階的緩和 (一部はリーダビリティで残したい)
+    "SIM102",  # collapsible if (可読性で残すケースあり)
+    "SIM105",  # contextlib.suppress (try-except-pass で十分)
+    "SIM108",  # use ternary instead of if-else (可読性で残すケースあり)
+    "SIM114",  # if-elif-else with same arms (TTS の分岐構造で意図的)
+    "SIM115",  # open file with context handler (一部 lazy load で必要)
+    "SIM117",  # nested with statements (可読性で残すケースあり)
+    "SIM118",  # in dict.keys() (明示性のため許容)
+    # PERF: 段階的緩和
+    "PERF102",  # incorrect dict iterator (パフォーマンス影響軽微)
+    "PERF203",  # try-except in loop (致命的でない/置き換え難しいケースあり)
+    "PERF401",  # use list comprehension (リーダビリティで残すケースあり)
+    "PERF402",  # manual list copy (`list.copy()` ではなく `[:]` を意図的に使う場面あり)
+    "PERF403",  # manual dict comprehension (リーダビリティ優先)
+    # RUF: 日本語コメント/文字列を多用するため一部緩和
+    "RUF001",  # ambiguous unicode characters in string (日本語/CJK で誤検出)
+    "RUF002",  # ambiguous unicode characters in docstring
+    "RUF003",  # ambiguous unicode characters in comment
+    "RUF005",  # collection literal concatenation (`[*a, *b]` より `a + b` を残す場面あり)
+    "RUF012",  # mutable class default (dataclasses.field で個別対応中)
+    "RUF013",  # implicit optional (M2 で個別対応)
+    "RUF100",  # unused noqa (ruff version drift で一時的に発生)
+]
+
+# isort互換設定
+[tool.ruff.lint.isort]
+known-first-party = ["piper", "piper_train"]
+combine-as-imports = true
+lines-after-imports = 2
+
+# flake8-quotes互換設定
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "double"
+
+# Per-file ignores
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+# テストファイル全般: bandit の assert 系 / pylint magic value / 条件付き import などを緩和
+"src/python/tests/*" = [
+    "ARG",      # unused arguments (fixtures)
+    "PLC0415",  # conditional imports allowed in tests
+    "S",        # bandit rules (assert/hardcoded passwords/etc は test では多用)
+    "PLR2004",  # magic value comparison (test では普通)
+    "SIM117",   # nested with statements
+    "PERF",     # performance anti-patterns (test では readability 優先)
+]
+"src/python_run/tests/*" = [
+    "ARG",
+    "PLC0415",
+    "S",
+    "PLR2004",
+    "SIM117",
+    "PERF",
+]
+"src/python/g2p/tests/*" = [
+    "ARG",
+    "PLC0415",
+    "S",
+    "PLR2004",
+    "SIM117",
+    "PERF",
+]
+"test/**/*" = [
+    "ARG",
+    "PLC0415",
+    "S",
+    "PLR2004",
+    "SIM117",
+    "PERF",
+]
+"tests/**/*" = [
+    "ARG",
+    "PLC0415",
+    "S",
+    "PLR2004",
+    "SIM117",
+    "PERF",
+]
+"scripts/*" = ["ARG", "PLC0415", "S", "RUF059"]  # Allow conditional imports + subprocess + unused unpack
+"tools/**/*" = ["ARG", "PLC0415", "S"]  # benchmark/dev tools
+# 同梱ビルドスクリプト: 自前 build した tar/zip を展開するので extractall は許容
+"src/piper_phonemize_bundled/*.py" = ["S202"]
+# G2P ベンチマーク: 条件付き import + subprocess 許容
+"src/python/g2p/benchmarks/*.py" = ["PLC0415", "S"]
+# WASM テスト util: localhost への curl shell=True (ローカル開発用)
+"src/wasm/openjtalk-web/test/*.py" = ["S602", "S605", "S607"]
+# preprocess.py / prepare_bilingual_dataset.py: 既存ループ構造の SIM113 (enumerate refactor) は別 PR で
+"src/python/piper_train/tools/prepare_bilingual_dataset.py" = ["SIM113"]
+# token_mapper.py: グローバル変数を使用した音素マッピングシステム
+"src/python/piper_train/phonemize/token_mapper.py" = ["PLW0603"]
+# korean.py: G2p()インスタンスのモジュールレベルキャッシュ
+"src/python/piper_train/phonemize/korean.py" = ["PLW0603"]
+# bilingual.py: 条件付きインポート（後方互換のため動的切り替え）
+"src/python/piper_train/phonemize/bilingual.py" = ["PLC0415"]
+# mel_processing.py: パフォーマンス最適化のためのグローバルキャッシュ
+"src/python/piper_train/vits/mel_processing.py" = ["PLW0602"]
+# test_phonemize.py: オプショナルな依存関係の条件付きインポート
+"src/python/tests/test_phonemize.py" = ["E402"]
+# preprocess.py: 条件付きインポートで警告を抑制 + 既存ループ構造の SIM113 (enumerate refactor は別 PR で)
+"src/python/piper_train/preprocess.py" = ["PLC0415", "SIM113"]
+"src/python/piper_train/phonemize/english.py" = ["PLC0415", "PLW0603"]
+# prepare scripts: 条件付きインポートを許可
+"src/python/prepare_*.py" = ["PLC0415"]
+# runtime files: 条件付きインポートを許可
+"src/python_run/*" = ["PLC0415"]
+# Docker test scripts: テスト関数内での条件付きインポートを許可
+"docker/**/test.py" = ["PLC0415"]
+# HuggingFace Spaces app: オプショナルな多言語依存の条件付きインポート
+"huggingface-space/*.py" = ["PLC0415"]
+# __main__.py: torch.serialization.add_safe_globals() がimport前に必要
+"src/python/piper_train/__main__.py" = ["E402"]
+# export_onnx.py: 同上
+"src/python/piper_train/export_onnx.py" = ["E402"]
+# lightning.py: メソッド内の遅延import（循環import回避、オプショナル依存）
+"src/python/piper_train/vits/lightning.py" = ["PLC0415"]
+
+[tool.setuptools.packages.find]
+where = ["src/python"]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+
+# -----------------------------------------------------------------------------
+# Coverage configuration
+# -----------------------------------------------------------------------------
+# `pyproject.toml` is the single source of truth for coverage settings.
+# pytest.ini の addopts で `--cov-fail-under` を上書きするため、CI と local で
+# 同じ閾値を担保。閾値の段階的引き上げ計画:
+#   - root (piper_train + piper runtime): 70 -> 80 (M2-M3)
+#   - g2p: 80 -> 85 (M3)
+#
+# `omit` の方針 (Wave 2 で根本対応):
+#   unit-test 不可能なモジュールを `omit` に列挙し、計測対象を「ライブラリ
+#   コード (model 構造 / G2P / config parser / timing 計算 etc)」に絞る。
+#   omit 根拠は以下 4 カテゴリのいずれか:
+#     (a) CLI エントリ — argparse + `if __name__ == "__main__"` のみで lib 利用は薄い
+#     (b) Lightning Trainer / DDP 起動を要するもの — マルチ GPU + datasets が必要
+#     (c) Data preprocessing — 大量のオーディオ/テキスト ファイルシステム I/O が必要
+#     (d) Network / model file 必須 (HuggingFace download, 巨大 .onnx ロード)
+#   E2E は別途 docker / integration job で cover (本 unit coverage の対象外)。
+[tool.coverage.run]
+branch = true
+source = [
+    "src/python/piper_train",
+    "src/python_run/piper",
+    "src/python/g2p/piper_plus_g2p",
+]
+omit = [
+    # ----- 既存 -----
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__main__.py",                                       # (a) CLI エントリ
+    "*/vits/monotonic_align/*",                            # Cython generated
+    "*/.venv/*",
+    "*/build/*",
+    "*/dist/*",
+    # ----- (a) CLI エントリ (argparse + main()、lib 関数として呼ばれない) -----
+    "*/piper_train/clean_cached_audio.py",
+    "*/piper_train/select_speaker.py",
+    "*/piper_train/filter_utterances.py",
+    "*/piper_train/voice_conversion.py",
+    "*/piper_train/f0_extraction.py",
+    "*/piper_train/infer.py",
+    "*/piper_train/infer_generator.py",
+    "*/piper_train/infer_torchscript.py",
+    "*/piper_train/infer_onnx.py",                         # (a) ONNX 推論 CLI (model file 必須)
+    "*/piper_train/infer_onnx_streaming.py",
+    "*/piper_train/export_torchscript.py",
+    "*/piper_train/export_generator.py",
+    "*/piper_train/export_onnx.py",                        # (a)+(d) model file 必須 + Lightning ckpt load
+    "*/piper_train/export_onnx_streaming.py",
+    "*/piper_train/update_model_config.py",
+    # ----- (b) Lightning Trainer 起動が必要 -----
+    "*/piper_train/vits/lightning.py",                     # Lightning Module / Trainer
+    "*/piper_train/vits/onnx_attention.py",                # ONNX export 専用 (推論時のみ)
+    "*/piper_train/vits/losses.py",                        # 学習用 loss 関数のみ (lightning.py が唯一の caller)
+    "*/piper_train/vits/config.py",                        # dataclass + 学習時 factory のみ (lightning.py が caller)
+    # ----- (a) vendored scipy.io.wavfile (read/write のみ使用、形式判定の大部分は dead branch) -----
+    "*/piper_train/vits/wavfile.py",
+    # ----- (a) SSML fallback shim (canonical は piper_plus_g2p.ssml 側、ランタイム側は import re-export のみ) -----
+    "*/piper/phonemize/ssml.py",
+    # ----- (c) Data preprocessing scripts -----
+    "*/piper_train/preprocess.py",
+    "*/piper_train/tools/prepare_bilingual_dataset.py",
+    "*/piper_train/tools/prepare_multilingual_dataset.py",
+    "*/piper_train/tools/convert_fp16.py",                 # (a) ONNX 変換 CLI
+    "*/piper_train/tools/convert_nst_dictionary.py",       # (a) 辞書変換 CLI
+    "*/piper_train/tools/add_prosody_features.py",         # (a) prosody 抽出 CLI
+    # ----- (d) Speaker encoder train/export scripts (model file + dataset 必須) -----
+    "*/piper_train/speaker_encoder/__init__.py",
+    "*/piper_train/speaker_encoder/encoder.py",            # ONNX/ckpt model file 必須
+    "*/piper_train/speaker_encoder/audio_utils.py",        # 音声ファイル I/O (test fixtures 不在)
+    "*/piper_train/speaker_encoder/ecapa_tdnn.py",         # 学習用モデル (Lightning Module)
+    "*/piper_train/speaker_encoder/evaluate.py",
+    "*/piper_train/speaker_encoder/export_encoder.py",
+    # ----- (b) norm_audio: VAD/trim はファイルシステム + audio I/O が必要 -----
+    "*/piper_train/norm_audio/__init__.py",
+    "*/piper_train/norm_audio/trim.py",
+    "*/piper_train/norm_audio/vad.py",
+    # ----- (a) Runtime CLI entries -----
+    "*/piper/__main__.py",
+    "*/piper/webui.py",                                    # Gradio UI
+    "*/piper/http_server.py",                              # FastAPI server (E2E test で cover)
+    "*/piper/training_manager.py",                         # subprocess train 起動
+    "*/piper/download.py",                                 # (d) HuggingFace network 必須
+    "*/piper/sample_texts.py",                             # WebUI 用 constant データ (制御フローなし)
+    # ----- (a) Resource finder (importlib.resources、env 依存) -----
+    "*/piper_train/_resources.py",
+    "*/piper_train/model_manager.py",                      # (d) HuggingFace catalog network 必須
+]
+parallel = true
+# Cython / 動的に書き換えられるファイルでの coverage 計測のずれを回避
+relative_files = true
+
+[tool.coverage.report]
+# CI/local 両方で coverage 70% を下回ると fail
+fail_under = 70
+show_missing = true
+skip_covered = false
+precision = 2
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@overload",
+    "\\.\\.\\.",  # Ellipsis (Protocol/abstract method)
+    "raise AssertionError",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

@@ -1,0 +1,80 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#FF000000"
+    },
+    {
+      "name": "ui_pure_black",
+      "value": "#FF000000"
+    },
+    {
+      "name": "ui_ime_toolbar_bg",
+      "value": "#FF242426"
+    },
+    {
+      "name": "ui_home_top_bg",
+      "value": "#FF000000"
+    },
+    {
+      "name": "ui_text_primary",
+      "value": "#E6FFFFFF"
+    },
+    {
+      "name": "ui_input_hint",
+      "value": "#66FFFFFF"
+    },
+    {
+      "name": "ui_ime_lang_pill",
+      "value": "#FF3A3A3E"
+    },
+    {
+      "name": "ui_ime_lang_pill_stroke",
+      "value": "#33FFFFFF"
+    },
+    {
+      "name": "ui_home_action_surface",
+      "value": "#FF4A4A50"
+    },
+    {
+      "name": "ui_paste_chip_bg",
+      "value": "#FF3A3A3E"
+    },
+    {
+      "name": "ui_handle_pill",
+      "value": "#66FFFFFF"
+    },
+    {
+      "name": "ui_settings_row_bg",
+      "value": "#FF2A2A2E"
+    },
+    {
+      "name": "ui_ime_toolbar_sheet",
+      "value": "#FF2E2E32"
+    },
+    {
+      "name": "ui_scrim",
+      "value": "#99000000"
+    },
+    {
+      "name": "ui_dialog_bg",
+      "value": "#FF2A2A2E"
+    },
+    {
+      "name": "ui_camera_card_bg",
+      "value": "#FF2A2A2C"
+    },
+    {
+      "name": "ui_camera_page_bg",
+      "value": "#FF121212"
+    },
+    {
+      "name": "ui_result_translated_green",
+      "value": "#FF69F0AE"
+    },
+    {
+      "name": "ui_link_blue",
+      "value": "#FF6BA3FF"
+    }
+  ]
+}

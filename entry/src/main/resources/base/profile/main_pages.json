@@ -1,0 +1,13 @@
+{
+  "src": [
+    "pages/Splash",
+    "pages/Index",
+    "pages/CameraTranslate",
+    "pages/Settings",
+    "pages/AboutApp",
+    "pages/OpenSourceLicenses",
+    "pages/Accessibility",
+    "pages/TtsVoicePack",
+    "pages/NllbModelPack"
+  ]
+}

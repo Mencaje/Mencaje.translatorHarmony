@@ -1,0 +1,15 @@
+{
+  "version-name": "2.0.0",
+  "version-code": 2,
+  "type": "debug",
+  "bundle-info": {
+    "bundle-name": "com.Mencaje.translator",
+    "apl": "normal",
+    "app-feature": "hos_normal_app"
+  },
+  "acls": {
+    "allowed-acls": [
+      "ohos.permission.USE_FLOAT_BALL"
+    ]
+  }
+}

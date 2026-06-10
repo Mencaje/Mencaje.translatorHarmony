@@ -1,0 +1,716 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using PiperPlus.Core.Inference;
+using PiperPlus.Core.Phonemize;
+
+namespace PiperPlus.Core.Tests;
+
+/// <summary>
+/// Phase 3 tests covering <see cref="PhonemeSilenceProcessor"/>,
+/// <c>TimingWriter</c>, <see cref="StreamingWriter"/>,
+/// <see cref="CustomDictionary"/>, and <see cref="SessionFactory"/>.
+/// </summary>
+public sealed class Phase3Tests : IDisposable
+{
+    private readonly List<string> _tempFiles = new();
+
+    public void Dispose()
+    {
+        foreach (var path in _tempFiles)
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine($"[Test cleanup] {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates a temporary file with the given content and registers it for cleanup.
+    /// </summary>
+    private string CreateTempFile(string content, string extension = ".txt")
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"piper_test_{Guid.NewGuid():N}{extension}");
+        File.WriteAllText(path, content, Encoding.UTF8);
+        _tempFiles.Add(path);
+        return path;
+    }
+
+    // ================================================================
+    // PhonemeSilenceProcessor.Parse
+    // ================================================================
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_ValidInput()
+    {
+        Dictionary<string, float> result = PhonemeSilenceProcessor.Parse("_ 0.5");
+
+        Assert.Single(result);
+        Assert.True(result.ContainsKey("_"));
+        Assert.Equal(0.5f, result["_"]);
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_MultipleEntries()
+    {
+        Dictionary<string, float> result = PhonemeSilenceProcessor.Parse("_ 0.5,# 0.3");
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(0.5f, result["_"]);
+        Assert.Equal(0.3f, result["#"]);
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_EmptyString_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => PhonemeSilenceProcessor.Parse(string.Empty));
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_NullString_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => PhonemeSilenceProcessor.Parse(null!));
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_WhitespaceOnly_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => PhonemeSilenceProcessor.Parse("   "));
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_InvalidFormat_NoSpace_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => PhonemeSilenceProcessor.Parse("_0.5"));
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_InvalidFormat_BadNumber_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => PhonemeSilenceProcessor.Parse("_ abc"));
+    }
+
+    // ================================================================
+    // PhonemeSilenceProcessor.SplitAtPhonemeSilence
+    // ================================================================
+    [Fact]
+    public void PhonemeSilenceProcessor_SplitAtPhonemeSilence_Basic()
+    {
+        // phoneme_id_map: "_" -> [5], "a" -> [10], "b" -> [11]
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["_"] = [5],
+            ["a"] = [10],
+            ["b"] = [11],
+        };
+
+        // Phoneme silence: 0.5 seconds after "_"
+        var phonemeSilence = new Dictionary<string, float> { ["_"] = 0.5f };
+
+        // Sequence: a, _, b  (IDs: 10, 5, 11)
+        long[] phonemeIds = [10, 5, 11];
+
+        const int sampleRate = 22050;
+
+        List<PhonemeSilenceProcessor.Phrase> phrases = PhonemeSilenceProcessor.SplitAtPhonemeSilence(
+            phonemeIds, prosodyFlat: null, phonemeSilence, phonemeIdMap, sampleRate);
+
+        // Expect 2 phrases: [10, 5] with silence, [11] without silence
+        Assert.Equal(2, phrases.Count);
+
+        // First phrase: contains 'a' and '_', ends at the silence phoneme
+        Assert.Equal([10L, 5L], phrases[0].PhonemeIds);
+        int expectedSilenceSamples = (int)(0.5f * sampleRate);
+        Assert.Equal(expectedSilenceSamples, phrases[0].SilenceSamples);
+
+        // Second (trailing) phrase: contains 'b', no trailing silence
+        Assert.Equal([11L], phrases[1].PhonemeIds);
+        Assert.Equal(0, phrases[1].SilenceSamples);
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_SplitAtPhonemeSilence_NoSilencePhonemes()
+    {
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["a"] = [10],
+            ["b"] = [11],
+        };
+
+        var phonemeSilence = new Dictionary<string, float> { ["_"] = 0.5f };
+        long[] phonemeIds = [10, 11];
+
+        List<PhonemeSilenceProcessor.Phrase> phrases = PhonemeSilenceProcessor.SplitAtPhonemeSilence(
+            phonemeIds, null, phonemeSilence, phonemeIdMap, 22050);
+
+        // No split: single trailing phrase with 0 silence
+        Assert.Single(phrases);
+        Assert.Equal([10L, 11L], phrases[0].PhonemeIds);
+        Assert.Equal(0, phrases[0].SilenceSamples);
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_SplitAtPhonemeSilence_WithProsody()
+    {
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["_"] = [5],
+            ["a"] = [10],
+        };
+
+        var phonemeSilence = new Dictionary<string, float> { ["_"] = 0.2f };
+
+        long[] phonemeIds = [10, 5, 10];
+
+        // Prosody: 3 values per phoneme-ID = 9 values total
+        long[] prosodyFlat = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+        List<PhonemeSilenceProcessor.Phrase> phrases = PhonemeSilenceProcessor.SplitAtPhonemeSilence(
+            phonemeIds, prosodyFlat, phonemeSilence, phonemeIdMap, 22050);
+
+        Assert.Equal(2, phrases.Count);
+
+        // First phrase prosody: [1,2,3, 4,5,6]
+        Assert.NotNull(phrases[0].ProsodyFlat);
+        Assert.Equal([1L, 2L, 3L, 4L, 5L, 6L], phrases[0].ProsodyFlat);
+
+        // Second phrase prosody: [7,8,9]
+        Assert.NotNull(phrases[1].ProsodyFlat);
+        Assert.Equal([7L, 8L, 9L], phrases[1].ProsodyFlat);
+    }
+
+    // ================================================================
+    // TimingWriter / TimingWriter.WriteJson / TimingWriter.WriteTsv
+    //
+    // 旧 3 テスト (TimingWriter_CalculateTiming_BasicDurations /
+    // TimingWriter_WriteJson_ValidOutput / TimingWriter_WriteTsv_ValidOutput)
+    // は SUT 未呼出 (test 内で計算した数値を test 内で assert /
+    // 匿名 object をシリアライズして自分が書いた値を assert /
+    // StringBuilder で TSV を組んで string.Split を assert) に該当し、
+    // production schema (`total_duration_ms`/`start_ms`/`end_ms`) とも
+    // 矛盾していたため削除。本物の検証は TimingWriterTests.cs に存在。
+    // ================================================================
+
+    // ================================================================
+    // StreamingWriter.WriteChunked
+    // ================================================================
+    [Fact]
+    public void StreamingWriter_WriteChunked_CorrectBytes()
+    {
+        short[] samples = [100, -200, 300];
+        using var ms = new MemoryStream();
+
+        StreamingWriter.WriteChunked(ms, samples.AsSpan(), chunkSamples: 1024);
+
+        // Raw PCM: each sample is 2 bytes (little-endian int16)
+        Assert.Equal(samples.Length * 2, ms.Length);
+
+        // Verify byte content
+        ms.Position = 0;
+        using var reader = new BinaryReader(ms);
+        for (int i = 0; i < samples.Length; i++)
+        {
+            Assert.Equal(samples[i], reader.ReadInt16());
+        }
+    }
+
+    [Fact]
+    public void StreamingWriter_WriteChunked_MultipleChunks()
+    {
+        // 5 samples with chunk size 2 => 3 chunks (2 + 2 + 1)
+        short[] samples = [1, 2, 3, 4, 5];
+        using var ms = new MemoryStream();
+
+        StreamingWriter.WriteChunked(ms, samples.AsSpan(), chunkSamples: 2);
+
+        // All samples should be written regardless of chunking
+        Assert.Equal(samples.Length * 2, ms.Length);
+
+        // Verify data integrity across chunk boundaries
+        ms.Position = 0;
+        using var reader = new BinaryReader(ms);
+        for (int i = 0; i < samples.Length; i++)
+        {
+            Assert.Equal(samples[i], reader.ReadInt16());
+        }
+    }
+
+    [Fact]
+    public void StreamingWriter_WriteChunked_EmptySamples()
+    {
+        using var ms = new MemoryStream();
+
+        StreamingWriter.WriteChunked(ms, ReadOnlySpan<short>.Empty);
+
+        Assert.Equal(0, ms.Length);
+    }
+
+    [Fact]
+    public void StreamingWriter_WriteChunked_NullStream_Throws()
+    {
+        short[] samples = [1, 2];
+
+        Assert.Throws<ArgumentNullException>(
+            () => StreamingWriter.WriteChunked(null!, samples.AsSpan()));
+    }
+
+    [Fact]
+    public void StreamingWriter_WriteChunked_InvalidChunkSize_Throws()
+    {
+        short[] samples = [1, 2];
+        using var ms = new MemoryStream();
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => StreamingWriter.WriteChunked(ms, samples.AsSpan(), chunkSamples: 0));
+    }
+
+    [Fact]
+    public void StreamingWriter_WriteImmediate_SingleWrite()
+    {
+        short[] samples = [short.MinValue, 0, short.MaxValue];
+        using var ms = new MemoryStream();
+
+        StreamingWriter.WriteImmediate(ms, samples.AsSpan());
+
+        Assert.Equal(samples.Length * 2, ms.Length);
+
+        ms.Position = 0;
+        using var reader = new BinaryReader(ms);
+        for (int i = 0; i < samples.Length; i++)
+        {
+            Assert.Equal(samples[i], reader.ReadInt16());
+        }
+    }
+
+    [Fact]
+    public void StreamingWriter_WriteImmediate_EmptySamples()
+    {
+        using var ms = new MemoryStream();
+
+        StreamingWriter.WriteImmediate(ms, ReadOnlySpan<short>.Empty);
+
+        Assert.Equal(0, ms.Length);
+    }
+
+    [Fact]
+    public void StreamingWriter_WriteImmediate_NullStream_Throws()
+    {
+        short[] samples = [1];
+
+        Assert.Throws<ArgumentNullException>(
+            () => StreamingWriter.WriteImmediate(null!, samples.AsSpan()));
+    }
+
+    // ================================================================
+    // CustomDictionary.LoadDictionary
+    // ================================================================
+    [Fact]
+    public void CustomDictionary_LoadDictionary_ValidFile()
+    {
+        string content = "東京\tトウキョウ\n大阪\tオオサカ\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        Assert.Equal(2, dict.Count);
+    }
+
+    [Fact]
+    public void CustomDictionary_ApplyToText_SingleReplacement()
+    {
+        string content = "東京\tトウキョウ\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        string result = dict.ApplyToText("東京は暑い");
+
+        Assert.Equal("トウキョウは暑い", result);
+    }
+
+    [Fact]
+    public void CustomDictionary_ApplyToText_MultipleReplacements()
+    {
+        string content = "東京\tトウキョウ\n大阪\tオオサカ\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        string result = dict.ApplyToText("東京と大阪");
+
+        Assert.Equal("トウキョウとオオサカ", result);
+    }
+
+    [Fact]
+    public void CustomDictionary_ApplyToText_LongestMatch()
+    {
+        // "東京都" (longer) should take priority over "東京" (shorter)
+        string content = "東京\tトウキョウ\n東京都\tトウキョウト\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        string result = dict.ApplyToText("東京都は広い");
+
+        Assert.Equal("トウキョウトは広い", result);
+    }
+
+    [Fact]
+    public void CustomDictionary_LoadDictionary_CommentAndEmptyLines()
+    {
+        string content = "# This is a comment\n\n東京\tトウキョウ\n\n# Another comment\n大阪\tオオサカ\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        Assert.Equal(2, dict.Count);
+
+        string result = dict.ApplyToText("東京と大阪");
+        Assert.Equal("トウキョウとオオサカ", result);
+    }
+
+    [Fact]
+    public void CustomDictionary_LoadDictionary_FileNotFound()
+    {
+        var dict = new CustomDictionary();
+
+        Assert.Throws<FileNotFoundException>(
+            () => dict.LoadDictionary("/nonexistent/path/dict.txt"));
+    }
+
+    [Fact]
+    public void CustomDictionary_LoadDictionary_NullPath_Throws()
+    {
+        var dict = new CustomDictionary();
+
+        Assert.Throws<ArgumentNullException>(() => dict.LoadDictionary(null!));
+    }
+
+    [Fact]
+    public void CustomDictionary_ApplyToText_NoMatch()
+    {
+        string content = "東京\tトウキョウ\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        string result = dict.ApplyToText("大阪は暑い");
+
+        Assert.Equal("大阪は暑い", result);
+    }
+
+    [Fact]
+    public void CustomDictionary_ApplyToText_EmptyText()
+    {
+        string content = "東京\tトウキョウ\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        string result = dict.ApplyToText(string.Empty);
+
+        Assert.Equal(string.Empty, result);
+    }
+
+    [Fact]
+    public void CustomDictionary_ApplyToText_EmptyDictionary()
+    {
+        var dict = new CustomDictionary();
+
+        string result = dict.ApplyToText("東京は暑い");
+
+        Assert.Equal("東京は暑い", result);
+    }
+
+    [Fact]
+    public void CustomDictionary_LoadDictionary_MalformedLine_Skipped()
+    {
+        // Lines without a tab separator are silently skipped
+        string content = "no_tab_here\n東京\tトウキョウ\n";
+        string path = CreateTempFile(content);
+
+        var dict = new CustomDictionary();
+        dict.LoadDictionary(path);
+
+        Assert.Equal(1, dict.Count);
+    }
+
+    // ================================================================
+    // SessionFactory
+    // ================================================================
+    [Fact]
+    public void SessionFactory_Create_NullModelPath_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(
+            () => SessionFactory.Create(modelPath: null!));
+    }
+
+    [Fact]
+    public void SessionFactory_Create_EmptyModelPath_Throws()
+    {
+        Assert.Throws<ArgumentException>(
+            () => SessionFactory.Create(modelPath: string.Empty));
+    }
+
+    [Fact]
+    public void SessionFactory_Create_FileNotFound_Throws()
+    {
+        Assert.Throws<FileNotFoundException>(
+            () => SessionFactory.Create(modelPath: "/nonexistent/model.onnx"));
+    }
+
+    [Fact]
+    public void SessionFactory_CreateOptions_DefaultCpu()
+    {
+        // SessionFactory.Create validates the model path first, so we verify
+        // that with useCuda=false (the default), no CUDA-related exception
+        // is thrown before the file-existence check.
+        // The FileNotFoundException confirms the factory reached the file
+        // validation step rather than failing on CUDA EP setup.
+        FileNotFoundException ex = Assert.Throws<FileNotFoundException>(
+            () => SessionFactory.Create(
+                modelPath: "/tmp/nonexistent_model.onnx",
+                useCuda: false));
+
+        Assert.Contains("nonexistent_model.onnx", ex.Message);
+    }
+
+    [Fact]
+    public void SessionFactory_CreateOptions_WithCuda()
+    {
+        // Even with useCuda=true, the factory validates the model path first.
+        // The FileNotFoundException confirms we reach path validation
+        // regardless of the CUDA flag.
+        FileNotFoundException ex = Assert.Throws<FileNotFoundException>(
+            () => SessionFactory.Create(
+                modelPath: "/tmp/nonexistent_model.onnx",
+                useCuda: true,
+                gpuDeviceId: 1));
+
+        Assert.Contains("nonexistent_model.onnx", ex.Message);
+    }
+
+    // ================================================================
+    // PhonemeSilenceProcessor — additional edge-case tests
+    // ================================================================
+    [Fact]
+    public void PhonemeSilenceProcessor_SplitAtPhonemeSilence_EmptySilenceMap_SinglePhrase()
+    {
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["a"] = [10],
+            ["b"] = [11],
+        };
+
+        // Empty silence map → no phoneme triggers a split.
+        var phonemeSilence = new Dictionary<string, float>();
+
+        long[] phonemeIds = [10, 11, 10];
+
+        List<PhonemeSilenceProcessor.Phrase> phrases = PhonemeSilenceProcessor.SplitAtPhonemeSilence(
+            phonemeIds, prosodyFlat: null, phonemeSilence, phonemeIdMap, 22050);
+
+        // All phonemes land in a single trailing phrase with 0 silence.
+        Assert.Single(phrases);
+        Assert.Equal([10L, 11L, 10L], phrases[0].PhonemeIds);
+        Assert.Equal(0, phrases[0].SilenceSamples);
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_DuplicatePhonemes_LastValueWins()
+    {
+        // Two entries for the same phoneme "_"; the dictionary overwrites,
+        // so the last value (0.3) should win.
+        Dictionary<string, float> result = PhonemeSilenceProcessor.Parse("_ 0.5, _ 0.3");
+
+        Assert.Single(result);
+        Assert.True(result.ContainsKey("_"));
+        Assert.Equal(0.3f, result["_"]);
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_Parse_NegativeSeconds_Accepted()
+    {
+        // Negative seconds are syntactically valid floats; Parse should accept them.
+        Dictionary<string, float> result = PhonemeSilenceProcessor.Parse("_ -0.5");
+
+        Assert.Single(result);
+        Assert.Equal(-0.5f, result["_"]);
+    }
+
+    [Fact]
+    public void PhonemeSilenceProcessor_SplitAtPhonemeSilence_MultiIdPhoneme_UsesLastId()
+    {
+        // Phoneme "x" maps to two IDs [5, 6]. The processor should trigger
+        // a silence split only on the last ID (6), not on the first (5).
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["x"] = [5, 6],
+            ["a"] = [10],
+        };
+
+        var phonemeSilence = new Dictionary<string, float> { ["x"] = 0.4f };
+
+        // Sequence: a, x(5), x(6), a — split should happen after ID 6.
+        long[] phonemeIds = [10, 5, 6, 10];
+        const int sampleRate = 22050;
+
+        List<PhonemeSilenceProcessor.Phrase> phrases = PhonemeSilenceProcessor.SplitAtPhonemeSilence(
+            phonemeIds, prosodyFlat: null, phonemeSilence, phonemeIdMap, sampleRate);
+
+        // Expect 2 phrases: [10, 5, 6] with silence, [10] trailing.
+        Assert.Equal(2, phrases.Count);
+        Assert.Equal([10L, 5L, 6L], phrases[0].PhonemeIds);
+        Assert.Equal((int)(0.4f * sampleRate), phrases[0].SilenceSamples);
+        Assert.Equal([10L], phrases[1].PhonemeIds);
+        Assert.Equal(0, phrases[1].SilenceSamples);
+    }
+
+    // ================================================================
+    // TimingWriter — additional edge-case tests
+    // ================================================================
+    [Fact]
+    public void TimingWriter_CalculateTiming_DurationsShorterThanPhonemeIds_Throws()
+    {
+        // Length mismatch MUST throw per docs/spec/phoneme-timing-contract.toml
+        // [validation.length_consistency]. Previously this method silently
+        // truncated via Math.Min, which violated the cross-runtime contract
+        // (Rust/Go/Python all throw). PR #401 brought the C# implementation
+        // into compliance — this test now pins the throw behavior.
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["a"] = [10],
+            ["b"] = [11],
+            ["c"] = [12],
+        };
+
+        long[] phonemeIds = [10, 11, 12];
+        float[] durations = [5.0f, 3.0f]; // length mismatch — must throw
+
+        Assert.Throws<ArgumentException>(() =>
+            TimingWriter.CalculateTiming(
+                phonemeIds, durations, phonemeIdMap, sampleRate: 22050));
+    }
+
+    [Fact]
+    public void TimingWriter_CalculateTiming_UnknownPhonemeId_ShowsQuestionMark()
+    {
+        // ID 999 is not in the phoneme_id_map and is outside printable ASCII range.
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["a"] = [10],
+        };
+
+        long[] phonemeIds = [999];
+        float[] durations = [4.0f];
+
+        List<TimingWriter.PhonemeTimingEntry> entries = TimingWriter.CalculateTiming(
+            phonemeIds, durations, phonemeIdMap, sampleRate: 22050);
+
+        Assert.Single(entries);
+        Assert.Equal("?", entries[0].Phoneme);
+    }
+
+    [Fact]
+    public void TimingWriter_CalculateTiming_PrintableAsciiId()
+    {
+        // ID 65 (ASCII 'A') is not in the map, but falls in the printable
+        // ASCII range (3..127) and should be displayed as "A".
+        var phonemeIdMap = new Dictionary<string, int[]>
+        {
+            ["a"] = [10],
+        };
+
+        long[] phonemeIds = [65];
+        float[] durations = [2.0f];
+
+        List<TimingWriter.PhonemeTimingEntry> entries = TimingWriter.CalculateTiming(
+            phonemeIds, durations, phonemeIdMap, sampleRate: 22050);
+
+        Assert.Single(entries);
+        Assert.Equal("A", entries[0].Phoneme);
+    }
+
+    [Fact]
+    public void TimingWriter_WriteJson_ToFile_CreatesValidFile()
+    {
+        // Spec-conforming: top-level object {phonemes, total_duration_ms, sample_rate}
+        // (docs/spec/phoneme-timing-contract.toml [output_formats.json_pretty]).
+        var entries = new List<TimingWriter.PhonemeTimingEntry>
+        {
+            new("k", 0.0f, 58.0f, 58.0f),
+            new("a", 58.0f, 116.0f, 58.0f),
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"piper_test_{Guid.NewGuid():N}.json");
+        _tempFiles.Add(path);
+
+        const int sampleRate = 22050;
+        TimingWriter.WriteJson(path, entries, sampleRate);
+
+        Assert.True(File.Exists(path));
+
+        string json = File.ReadAllText(path);
+        using var doc = JsonDocument.Parse(json);
+        JsonElement root = doc.RootElement;
+
+        Assert.Equal(JsonValueKind.Object, root.ValueKind);
+        JsonElement phonemes = root.GetProperty("phonemes");
+        Assert.Equal(JsonValueKind.Array, phonemes.ValueKind);
+        Assert.Equal(2, phonemes.GetArrayLength());
+        Assert.Equal("k", phonemes[0].GetProperty("phoneme").GetString());
+        Assert.Equal("a", phonemes[1].GetProperty("phoneme").GetString());
+        Assert.True(phonemes[0].GetProperty("start_ms").GetSingle()
+            < phonemes[0].GetProperty("end_ms").GetSingle());
+
+        Assert.Equal(sampleRate, root.GetProperty("sample_rate").GetInt32());
+        Assert.Equal(116.0d, root.GetProperty("total_duration_ms").GetDouble(), precision: 3);
+    }
+
+    [Fact]
+    public void TimingWriter_WriteTsv_ToFile_CreatesValidFile()
+    {
+        // Spec-conforming: PhonemeTimingEntry stores ms; TSV header is start_ms/end_ms/duration_ms.
+        var entries = new List<TimingWriter.PhonemeTimingEntry>
+        {
+            new("k", 0.0f, 58.0f, 58.0f),
+            new("a", 58.0f, 116.0f, 58.0f),
+        };
+
+        string path = Path.Combine(Path.GetTempPath(), $"piper_test_{Guid.NewGuid():N}.tsv");
+        _tempFiles.Add(path);
+
+        TimingWriter.WriteTsv(path, entries);
+
+        Assert.True(File.Exists(path));
+
+        string[] lines = File.ReadAllLines(path);
+
+        // Header line
+        Assert.True(lines.Length >= 3, "Expected header + 2 data lines");
+        Assert.Equal("start_ms\tend_ms\tduration_ms\tphoneme", lines[0]);
+
+        // First data row
+        string[] cols1 = lines[1].Split('\t');
+        Assert.Equal(4, cols1.Length);
+        Assert.Equal("k", cols1[3]);
+        Assert.True(float.TryParse(cols1[0], NumberStyles.Float, CultureInfo.InvariantCulture, out float start1));
+        Assert.True(float.TryParse(cols1[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float end1));
+        Assert.True(end1 > start1);
+
+        // Second data row
+        string[] cols2 = lines[2].Split('\t');
+        Assert.Equal("a", cols2[3]);
+    }
+}

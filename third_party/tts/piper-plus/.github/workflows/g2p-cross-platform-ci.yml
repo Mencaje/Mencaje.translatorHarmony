@@ -1,0 +1,86 @@
+name: "G2P Cross-Platform Consistency"
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'src/python/g2p/**'
+      - 'src/rust/piper-plus-g2p/**'
+      - 'src/wasm/g2p/**'
+      - 'tests/fixtures/g2p/**'
+      - '.github/workflows/g2p-cross-platform-ci.yml'
+  pull_request:
+    paths:
+      - 'src/python/g2p/**'
+      - 'src/rust/piper-plus-g2p/**'
+      - 'src/wasm/g2p/**'
+      - 'tests/fixtures/g2p/**'
+      - '.github/workflows/g2p-cross-platform-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24.x'
+
+jobs:
+  consistency-check:
+    name: cross-platform consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/rust
+
+      - name: Install Python deps
+        working-directory: src/python/g2p
+        run: uv sync --extra all --extra dev
+
+      - name: Download NLTK data (for g2p-en)
+        working-directory: src/python/g2p
+        run: uv run python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng', quiet=True); nltk.download('cmudict', quiet=True)"
+
+      - name: Python cross-platform tests
+        working-directory: src/python/g2p
+        # 全 tests/ を実行する。pyproject.toml の `--cov-fail-under=80` は full-suite
+        # を前提とした閾値 (実測 ~87%) であり、`tests/test_cross_platform.py` 単独
+        # では 66.5% で fail する。PR #401 で threshold を 70 → 80 に引き上げた際の
+        # 設定不整合 (workflow の test scope 未更新) を解消する。
+        run: uv run pytest tests/ -v
+
+      - name: Rust build check
+        working-directory: src/rust
+        run: cargo check -p piper-plus-g2p --all-features
+
+      - name: JS fixture tests
+        working-directory: src/wasm/g2p
+        run: |
+          node --test test/test-g2p.js
+          node --test test/test-g2p-contract.js
+          node --test test/test-g2p-integration.js
+          node --test test/test-korean.js
+          node --test test/test-swedish.js
+          node --test test/test-detect.js
+          node --test test/test-exports.js
+
+      - name: Cross-runtime PUA table consistency (entry-by-entry)
+        # Replaces previous count-only validation with full entry comparison
+        # across all 6 runtime tables. See docs/spec/pua-contract.toml.
+        run: python3 scripts/check_pua_consistency.py --verbose --check-version

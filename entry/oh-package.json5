@@ -1,0 +1,13 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Please describe the basic information.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "libctranslate2_napi.so": "file:./src/main/cpp/types/libctranslate2_napi",
+    "libsilero_tts_napi.so": "file:./src/main/cpp/types/libsilero_tts_napi"
+  }
+}
+

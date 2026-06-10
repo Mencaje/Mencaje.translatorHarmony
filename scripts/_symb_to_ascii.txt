@@ -1,0 +1,4 @@
+    def symb_to_ascii(self, sentence):
+        ascii_list = [self.symb_ascii_dict.get(s, s) for s in sentence]
+        ascii_text = ''.join(ascii_list)
+        return ascii_text

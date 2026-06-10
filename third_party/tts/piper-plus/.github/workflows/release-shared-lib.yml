@@ -1,0 +1,1171 @@
+name: Release Shared Library
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  # PR triggers cover:
+  #   - G2P Apple-platform jobs (build-g2p-apple + assemble-g2p-xcframework)
+  #     since Issue #387.
+  #   - build-shared (Linux + macOS slices) since 2026-05 — Windows は cost
+  #     重いため tag のみ。CMakeLists.txt / src/cpp/** / cmake/** 改変が
+  #     tag 時に初めて壊れる risk を解消する保険。
+  # `assemble-xcframework` / `build-android` / `build-ios` / `release` は
+  # 引き続き push (tags) / workflow_dispatch のみ。
+  pull_request:
+    paths:
+      - 'src/rust/piper-plus-g2p/**'
+      - 'Sources/PiperPlusG2P/**'
+      - 'tests/PiperPlusG2PTests/**'
+      - 'Package.swift'
+      - 'cmake/**'
+      - 'src/cpp/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/release-shared-lib.yml'
+  workflow_dispatch:
+
+# Workflow-level permissions are read-only; the `release` job opts into
+# `contents: write` for GitHub Release creation only.
+permissions:
+  contents: read
+
+# Serialise tag-driven release builds against the same ref. We do NOT
+# cancel-in-progress: an interrupted release that has already uploaded
+# the linux/macos slice but not the iOS xcframework leaves an asymmetric
+# GitHub Release that's awkward to clean up. Letting the second run
+# queue is preferable. PR runs are not affected (different ref).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Issue #383 follow-up: ORT 1.17.0 → 1.20.0
+  # C++ source build / Android PR CI / Kotlin G2P CI と整合 (docs/reference/ort-versions.md)
+  ONNXRUNTIME_VERSION: "1.20.0"
+
+jobs:
+  build-shared:
+    name: Build ${{ matrix.name }}
+    # PR では Linux/macOS のみ smoke 実行 (Windows は cost で skip)。
+    # Tag push / workflow_dispatch では 3 OS 全部を build。
+    # NOTE: matrix context は job-level `if:` で評価できないため
+    # (https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability)、
+    # 最初の Skip detection step + 各 step での gate に分割している。
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: linux-x64
+            artifact: piper-plus-shared-linux-x64
+            archive_ext: tar.gz
+          - os: macos-15
+            name: macos-arm64
+            artifact: piper-plus-shared-macos-arm64
+            archive_ext: tar.gz
+          - os: windows-2022
+            name: windows-x64
+            artifact: piper-plus-shared-windows-x64
+            archive_ext: zip
+
+    steps:
+      - name: Detect PR Windows skip
+        # PR 時の windows-x64 matrix は cost 削減のため build をスキップする。
+        # job-level `if:` だと matrix context が evaluate できず "workflow file issue"
+        # (run が起動できず failure) になるため、この step で flag を立てて
+        # 後続 step は `steps.skip_check.outputs.skip != 'true'` で gate する。
+        id: skip_check
+        shell: bash
+        run: |
+          if [ "${{ matrix.name }}" = "windows-x64" ] && [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "::notice::Skipping windows-x64 build on pull_request (cost optimization). Tag / workflow_dispatch builds run all 3 OS."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6.0.2
+        if: steps.skip_check.outputs.skip != 'true'
+        with:
+          submodules: true
+
+      - name: Validate version tag
+        if: steps.skip_check.outputs.skip != 'true' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          # Anchored fully ($) so that tags like "1.0.0-malicious$(rm)" are rejected.
+          # Allow optional pre-release / build-metadata: 1.0.0, 1.0.0-rc1, 1.0.0+build.5
+          if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$'; then
+            echo "::error::Invalid version tag: v$TAG"
+            exit 1
+          fi
+          echo "Version: $TAG"
+
+      # NOTE: Windows uses PowerShell for CMake invocations because bash on
+      # windows-2022 mangles ${{ github.workspace }} (D:\a\piper-plus\piper-plus)
+      # — backslashes are interpreted as escape sequences resulting in
+      # `D:apiper-pluspiper-plus/install/...`. Using ${env:GITHUB_WORKSPACE}
+      # in pwsh keeps the path intact.
+      - name: Configure CMake (Unix)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPIPER_PLUS_BUILD_SHARED=ON \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install"
+
+      - name: Configure CMake (Windows)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installDir = "${env:GITHUB_WORKSPACE}/install" -replace '\\','/'
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DPIPER_PLUS_BUILD_SHARED=ON `
+            "-DCMAKE_INSTALL_PREFIX=$installDir"
+
+      - name: Build (Unix)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os != 'Windows'
+        shell: bash
+        run: cmake --build build --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+      - name: Build (Windows)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Install
+        if: steps.skip_check.outputs.skip != 'true'
+        shell: bash
+        run: cmake --install build --config Release
+
+      - name: Verify install layout (Unix)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os != 'Windows'
+        shell: bash
+        run: cmake -DPREFIX="${{ github.workspace }}/install" -P cmake/verify_install_layout.cmake
+
+      - name: Verify install layout (Windows)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installDir = "${env:GITHUB_WORKSPACE}/install" -replace '\\','/'
+          cmake "-DPREFIX=$installDir" -P cmake/verify_install_layout.cmake
+
+      - name: Create archive (Unix)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os != 'Windows'
+        run: |
+          cd "${{ github.workspace }}/install"
+          tar -czf "${{ github.workspace }}/${{ matrix.artifact }}.tar.gz" .
+
+      - name: Create archive (Windows)
+        if: steps.skip_check.outputs.skip != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # bsdtar (Windows 10+ ships it as `tar`) produces forward-slash POSIX
+          # paths inside the zip — Compress-Archive uses backslash paths which
+          # break cross-platform extraction (tar -t / unzip on Linux/macOS get
+          # garbled member names).
+          $installDir = "${env:GITHUB_WORKSPACE}/install"
+          $archivePath = "${env:GITHUB_WORKSPACE}/${{ matrix.artifact }}.zip"
+          tar -a -cf "$archivePath" -C "$installDir" .
+
+      - name: Upload artifact
+        # PR では smoke build のみで artifact は捨てる (release 用ではない)。
+        if: steps.skip_check.outputs.skip != 'true' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ github.workspace }}/${{ matrix.artifact }}.${{ matrix.archive_ext }}
+
+  build-ios:
+    name: Build iOS ${{ matrix.slice }}
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slice: ios-arm64
+            sdk: iphoneos
+            osx_archs: "arm64"
+          - slice: ios-arm64_x86_64-simulator
+            sdk: iphonesimulator
+            osx_archs: "arm64;x86_64"
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          submodules: true
+
+      - name: Validate version tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          # Anchored fully ($) so that tags like "1.0.0-malicious$(rm)" are rejected.
+          # Allow optional pre-release / build-metadata: 1.0.0, 1.0.0-rc1, 1.0.0+build.5
+          if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$'; then
+            echo "::error::Invalid version tag: v$TAG"
+            exit 1
+          fi
+          echo "Version: $TAG"
+
+      - name: Download ONNX Runtime iOS (Microsoft CDN)
+        env:
+          # ORT 1.20.0 sha256 (verified 2026-05-09, Content-Length: 44,218,716)
+          # Source: https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.20.0.zip
+          # Note: This zip is shared with CocoaPods/SPM — Microsoft breaking it
+          # would also break those channels, providing a strong invariant.
+          # See docs/reference/ios-shared-lib.md §2.1 for details.
+          ORT_IOS_SHA256: "50891a8aadd17d4811acb05ed151ba6c394129bb3ab14e843b0fc83a48d450ff"
+        run: |
+          set -euo pipefail
+          PRIMARY_URL="https://download.onnxruntime.ai/pod-archive-onnxruntime-c-${ONNXRUNTIME_VERSION}.zip"
+
+          curl -L --fail --retry 3 -o onnxruntime-ios.zip "${PRIMARY_URL}"
+
+          # sha256 verification (reproducibility + supply chain minimum)
+          ACTUAL_SHA256=$(shasum -a 256 onnxruntime-ios.zip | awk '{print $1}')
+          echo "Expected sha256: ${ORT_IOS_SHA256}"
+          echo "Actual   sha256: ${ACTUAL_SHA256}"
+          if [ "${ACTUAL_SHA256}" != "${ORT_IOS_SHA256}" ]; then
+            echo "::error::ONNX Runtime iOS zip sha256 mismatch — CDN content changed unexpectedly"
+            exit 1
+          fi
+
+          unzip -q onnxruntime-ios.zip -d onnxruntime-ios
+
+          # The CDN zip provides ios-arm64/onnxruntime.framework/onnxruntime
+          # as a Mach-O dynamic library. Static .a is NOT included
+          # (incompatible with the legacy GitHub Releases zip, see
+          # docs/reference/ios-shared-lib.md §2.1 ⚠️).
+          ORT_FW_ROOT=$(find onnxruntime-ios -name "onnxruntime.xcframework" -type d | head -1)
+          if [ -z "${ORT_FW_ROOT}" ]; then
+            echo "::error::onnxruntime.xcframework not found in CDN zip"
+            exit 1
+          fi
+          # M2: slice path follows matrix value (ios-arm64 or ios-arm64_x86_64-simulator)
+          IOS_SLICE="${ORT_FW_ROOT}/${{ matrix.slice }}"
+          ORT_FW_DIR="${IOS_SLICE}/onnxruntime.framework"
+
+          if [ ! -d "${ORT_FW_DIR}" ]; then
+            echo "::error::onnxruntime.framework not found at ${ORT_FW_DIR}"
+            echo "xcframework structure:"
+            ls -la "${ORT_FW_ROOT}/"
+            exit 1
+          fi
+
+          ORT_DYLIB="${ORT_FW_DIR}/onnxruntime"  # Mach-O dylib (no extension)
+          file "${ORT_DYLIB}"  # device: arm64 / simulator: arm64+x86_64 universal
+
+          # Prepare ORT directory structure for CMake
+          mkdir -p ort-ios/lib ort-ios/include
+          cp -R "${ORT_FW_DIR}/Headers/." ort-ios/include/
+          # Preserve the entire framework bundle (Info.plist required for Embed & Sign)
+          cp -R "${ORT_FW_DIR}" ort-ios/lib/onnxruntime.framework
+          # Symlink for CMake target_link_libraries (single-file path expectation)
+          ln -sf onnxruntime.framework/onnxruntime ort-ios/lib/libonnxruntime.dylib
+
+          echo "ORT_IOS_DIR=${{ github.workspace }}/ort-ios" >> "$GITHUB_ENV"
+          echo "ORT_IOS_LIB=${{ github.workspace }}/ort-ios/lib/libonnxruntime.dylib" >> "$GITHUB_ENV"
+          echo "ORT_IOS_FRAMEWORK=${{ github.workspace }}/ort-ios/lib/onnxruntime.framework" >> "$GITHUB_ENV"
+
+      - name: Configure CMake (iOS slice)
+        run: |
+          cmake -B build-ios \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/ios.toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.osx_archs }}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DPIPER_PLUS_BUILD_SHARED=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DONNXRUNTIME_DIR="${ORT_IOS_DIR}" \
+            -DONNXRUNTIME_LIB="${ORT_IOS_LIB}" \
+            -DONNXRUNTIME_INCLUDE_DIR="${ORT_IOS_DIR}/include"
+
+      - name: Build (iOS slice)
+        run: cmake --build build-ios --config Release -j$(sysctl -n hw.ncpu)
+
+      - name: Verify slice arch
+        run: |
+          set -euo pipefail
+          echo "libpiper_plus.a arch:"
+          lipo -info build-ios/libpiper_plus.a
+          echo "onnxruntime framework arch:"
+          lipo -info "${ORT_IOS_FRAMEWORK}/onnxruntime"
+
+      - name: Show libpiper_plus.a archive contents
+        # Diagnostic — confirms the POST_BUILD libtool merge produced an archive
+        # containing piper_common / openjtalk / hts_engine_stub objects.
+        # Note: simulator slice produces an arm64+x86_64 fat archive that `ar`
+        # can't read directly (must be unpacked with `lipo -thin` first), so we
+        # use `nm` for symbol probing — `nm` handles both thin and fat archives.
+        run: |
+          set -euo pipefail
+          echo "=== file size ==="
+          ls -la build-ios/libpiper_plus.a
+          echo "=== file type ==="
+          file build-ios/libpiper_plus.a
+          echo "=== arch(s) ==="
+          lipo -archs build-ios/libpiper_plus.a 2>/dev/null || echo "(thin archive — single arch)"
+          echo "=== sample piper:: defined symbols (first 5, any arch) ==="
+          # nm -gU returns external defined symbols across all archs in fat archives.
+          nm -gU build-ios/libpiper_plus.a 2>/dev/null \
+            | awk '$2 ~ /^[TDSR]$/ {print $NF}' \
+            | grep -E '^__ZN[0-9]+piper' \
+            | sort -u | head -5 \
+            || echo "(none — archive merge failed)"
+          echo "=== sample _piper_plus_* / _openjtalk_* defined symbols (first 5) ==="
+          nm -gU build-ios/libpiper_plus.a 2>/dev/null \
+            | awk '$2 ~ /^[TDSR]$/ {print $NF}' \
+            | grep -E '^_(piper_plus_|openjtalk_)' \
+            | sort -u | head -5 \
+            || echo "(none — stub TU not merged)"
+
+      - name: Verify symbol resolution (ORT + project-internal)
+        # Three-stage symbol-resolution gate for the iOS slice:
+        #   1. Undefined references in libpiper_plus.a (per-object level).
+        #   2. SUBTRACT symbols that ARE defined elsewhere inside the same
+        #      archive — these are intra-archive cross-TU references that
+        #      resolve at consumer link time. `nm -u` reports them as undefined
+        #      per-object, but they're not actually missing.
+        #   3. Of what's left:
+        #      a. ORT-prefixed (_Ort*, _OrtApi*, ...) MUST resolve against
+        #         onnxruntime framework. Catches ORT version drift.
+        #      b. Project-internal (_piper_plus_*, _openjtalk_*, __ZN<N>piper)
+        #         MUST be empty. Catches missing TUs / failed archive merge.
+        # Apple/libc/libc++ runtime symbols pass through unchecked; the
+        # consumer's final link resolves them.
+        run: |
+          set -euo pipefail
+
+          # 1. ALL undefined references (per-object, includes intra-archive refs).
+          nm -u build-ios/libpiper_plus.a 2>/dev/null \
+            | awk 'NF > 0 {print $NF}' \
+            | sort -u > all-undefined.txt
+          echo "raw undefined references (per-object): $(wc -l < all-undefined.txt)"
+
+          # 2. Symbols defined inside the archive (T/D/S/R types). Subtracting
+          #    these from the undefined set gives "truly external" references.
+          nm -gU build-ios/libpiper_plus.a 2>/dev/null \
+            | awk '$2 ~ /^[TDSR]$/ {print $NF}' \
+            | sort -u > defined-in-archive.txt
+          echo "symbols defined inside the archive:    $(wc -l < defined-in-archive.txt)"
+
+          # 3. Truly external = undefined - defined-in-archive.
+          comm -23 all-undefined.txt defined-in-archive.txt > truly-external.txt
+          echo "symbols that must resolve externally:  $(wc -l < truly-external.txt)"
+
+          # 4. ORT framework exports.
+          nm -gU "${ORT_IOS_FRAMEWORK}/onnxruntime" 2>/dev/null \
+            | awk '$2 ~ /^[TDS]$/ {print $NF}' \
+            | sort -u > ort-exports.txt
+          echo "ORT framework exports:                 $(wc -l < ort-exports.txt)"
+
+          # 5. Subtract ORT-resolved.
+          comm -23 truly-external.txt ort-exports.txt > unresolved-after-ort.txt
+
+          # 5a. ORT-prefixed unresolved (catches ORT version drift / missing dylib).
+          grep -E '^_(Ort|OrtApi|OrtCreate|OrtRelease|OrtSession|OrtGetVersionString)' \
+            unresolved-after-ort.txt > ort-related-unresolved.txt || true
+
+          if [ -s ort-related-unresolved.txt ]; then
+            echo "::error::ORT-prefixed symbols are unresolved against onnxruntime framework."
+            cat ort-related-unresolved.txt
+            exit 1
+          fi
+          echo "✓ all _Ort*/_OrtApi*/_OrtSession* undefined symbols resolve against onnxruntime framework"
+
+          # 5b. Project-internal unresolved (catches iOS-exclusion bugs / failed merge).
+          grep -E '^_(piper_plus_|openjtalk_|get_openjtalk_|ensure_openjtalk_|reset_openjtalk_|force_openjtalk_)|^__ZN[0-9]+piper' \
+            unresolved-after-ort.txt > project-unresolved.txt || true
+
+          if [ -s project-unresolved.txt ]; then
+            echo "::error::Project-internal symbols are unresolved in libpiper_plus.a."
+            echo "These will fail to link in consumer Xcode projects:"
+            cat project-unresolved.txt
+            echo ""
+            echo "To fix:"
+            echo "  - For OpenJTalk wrapper functions: add a stub to src/cpp/openjtalk_ios_stub.c"
+            echo "  - For piper_plus_* C API: ensure the implementing TU is included in PiperCommon.cmake's iOS branch"
+            echo "  - For piper:: C++ symbols: confirm cmake/PiperPlusShared.cmake's POST_BUILD libtool merge step ran (check the prior 'Show libpiper_plus.a archive contents' step output)"
+            exit 1
+          fi
+          echo "✓ no project-internal unresolved symbols (libpiper_plus.a iOS slice will link cleanly in consumer apps)"
+
+      - name: Stage slice for xcframework assembly
+        # Each slice prepares a self-contained directory (lib + include +
+        # generated module.modulemap) that the assemble-xcframework job
+        # consumes via download-artifact.
+        run: |
+          set -euo pipefail
+          mkdir -p slice-out/lib slice-out/include
+          cp build-ios/libpiper_plus.a slice-out/lib/
+          cp src/cpp/piper_plus.h slice-out/include/
+          # M2: copy generated module.modulemap (PiperPlusShared.cmake writes it
+          # to CMAKE_BINARY_DIR for iOS builds, enabling Swift `import PiperPlus`
+          # via SPM binaryTarget — issue #377 §11.7)
+          if [ -f build-ios/module.modulemap ]; then
+            cp build-ios/module.modulemap slice-out/include/
+          else
+            echo "::error::module.modulemap not generated by CMake (PiperPlusShared.cmake iOS branch)"
+            exit 1
+          fi
+
+      - name: Upload slice artifact (for xcframework assembly)
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: piper-plus-slice-${{ matrix.slice }}
+          path: slice-out
+
+      # M1-compat tar.gz (device slice only, .framework bundled).
+      # Continued in v1.13.0 migration period; v1.14.0 plans to drop it.
+      - name: Package M1-compat tar.gz (device slice only)
+        if: matrix.slice == 'ios-arm64'
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/lib artifacts/include
+          cp build-ios/libpiper_plus.a artifacts/lib/
+          cp src/cpp/piper_plus.h artifacts/include/
+          # Use `ditto` (Apple-aware) instead of `cp -R` to preserve framework
+          # symlinks (Versions/A) and resource forks. Critical for codesign
+          # validation on consumer side.
+          ditto "${ORT_IOS_FRAMEWORK}" artifacts/lib/onnxruntime.framework
+          # Emit a deprecation warning so consumers know the M1-compat path is
+          # going away — the SPM xcframework path is the supported flow from
+          # v1.13.0 onwards. tar.gz disappears in v1.14.0 (see CHANGELOG).
+          echo "::warning::libpiper_plus-ios-arm64.tar.gz is DEPRECATED in v1.13.0 and will be removed in v1.14.0. Migrate to libpiper_plus-ios-v\${VERSION}.xcframework.zip + Package.swift."
+          cd artifacts
+          tar -czf "${{ github.workspace }}/libpiper_plus-ios-arm64.tar.gz" .
+
+      - name: Upload M1-compat artifact (device slice only)
+        if: matrix.slice == 'ios-arm64'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: libpiper_plus-ios-arm64
+          path: libpiper_plus-ios-arm64.tar.gz
+
+  assemble-xcframework:
+    name: Assemble piper_plus.xcframework
+    if: github.event_name != 'pull_request'
+    needs: build-ios
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Download device slice
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: piper-plus-slice-ios-arm64
+          path: slices/ios-arm64
+
+      - name: Download simulator slice
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: piper-plus-slice-ios-arm64_x86_64-simulator
+          path: slices/ios-arm64_x86_64-simulator
+
+      - name: Verify slice contents
+        run: |
+          set -euo pipefail
+          for slice in ios-arm64 ios-arm64_x86_64-simulator; do
+            echo "=== ${slice} ==="
+            ls -la "slices/${slice}/lib"
+            ls -la "slices/${slice}/include"
+            # Use `lipo -archs` and grep for expected arch tokens — `lipo -info`
+            # returns 0 even for empty archives, so it's not a real check.
+            archs=$(lipo -archs "slices/${slice}/lib/libpiper_plus.a")
+            echo "archs: ${archs}"
+            case "${slice}" in
+              ios-arm64)
+                echo "${archs}" | grep -qx 'arm64' \
+                  || { echo "::error::expected arm64 only, got: ${archs}"; exit 1; }
+                ;;
+              ios-arm64_x86_64-simulator)
+                echo "${archs}" | tr ' ' '\n' | sort | tr '\n' ' ' | grep -q 'arm64 x86_64' \
+                  || { echo "::error::expected arm64+x86_64 simulator slice, got: ${archs}"; exit 1; }
+                ;;
+            esac
+            test -f "slices/${slice}/include/piper_plus.h"
+            test -f "slices/${slice}/include/module.modulemap"
+          done
+
+      - name: Create xcframework
+        run: |
+          set -euo pipefail
+          xcodebuild -create-xcframework \
+            -library slices/ios-arm64/lib/libpiper_plus.a \
+            -headers slices/ios-arm64/include \
+            -library slices/ios-arm64_x86_64-simulator/lib/libpiper_plus.a \
+            -headers slices/ios-arm64_x86_64-simulator/include \
+            -output piper_plus.xcframework
+
+          if [ ! -f piper_plus.xcframework/Info.plist ]; then
+            echo "::error::xcframework Info.plist not generated by xcodebuild"
+            exit 1
+          fi
+
+          # Place a copy of the empty Privacy Manifest at the xcframework root
+          # (M2 §11.7 繰り上げ採用 — iOS 17+ App Store compatibility).
+          # Note: ORT-side Privacy Manifest is NOT provided by Microsoft as of
+          # 2026-05; consumers must add their own to cover ORT usage.
+          cp cmake/PrivacyInfo.xcprivacy piper_plus.xcframework/PrivacyInfo.xcprivacy
+
+          echo "=== xcframework structure ==="
+          ls -la piper_plus.xcframework/
+          plutil -p piper_plus.xcframework/Info.plist
+          find piper_plus.xcframework -name "libpiper_plus.a" -exec lipo -archs {} \;
+          find piper_plus.xcframework -name "module.modulemap" -print -exec cat {} \;
+          plutil -p piper_plus.xcframework/PrivacyInfo.xcprivacy
+
+      - name: Zip xcframework
+        run: |
+          set -euo pipefail
+          # zip -ry preserves symlinks (Apple frameworks rely on them in some
+          # configurations; harmless overhead for static-archive xcframeworks).
+          zip -ry libpiper_plus-ios.xcframework.zip piper_plus.xcframework
+          ls -la libpiper_plus-ios.xcframework.zip
+          echo "sha256:"
+          shasum -a 256 libpiper_plus-ios.xcframework.zip
+
+      - name: Upload xcframework artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: libpiper_plus-ios-xcframework
+          path: libpiper_plus-ios.xcframework.zip
+
+  # ---------------------------------------------------------------------
+  # piper-plus-g2p Apple platforms build (Issue #387)
+  # ---------------------------------------------------------------------
+  # Pure Rust + bundled dictionaries → no ORT dependency, no CMake. The
+  # crate's own ffi.rs C ABI is built directly via `cargo build` for each
+  # target, then `lipo` merges multi-arch slices into a universal archive,
+  # and `xcodebuild -create-xcframework` produces the final xcframework.
+  # Consumed by Package.swift via `PiperPlusG2P` product.
+  # See docs/reference/swift-g2p.md §4.4 — §4.5.
+  #
+  # The macOS slice (added 2026-05) lets `swift run` consumers and macOS
+  # CLI tooling depend on PiperPlusG2P without iOS-only build flags. The
+  # synthesis xcframework remains iOS-only because it bundles ORT, which
+  # has its own macOS distribution path.
+  build-g2p-apple:
+    name: Build piper-plus-g2p Apple ${{ matrix.slice }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slice: ios-arm64
+            rust_targets: "aarch64-apple-ios"
+          - slice: ios-arm64_x86_64-simulator
+            rust_targets: "aarch64-apple-ios-sim,x86_64-apple-ios"
+          - slice: macos-arm64_x86_64
+            rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Validate version tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$'; then
+            echo "::error::Invalid version tag: v$TAG"
+            exit 1
+          fi
+          echo "Version: $TAG"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/rust/target
+          key: g2p-apple-${{ matrix.slice }}-${{ hashFiles('src/rust/Cargo.lock', 'src/rust/piper-plus-g2p/Cargo.toml') }}
+          restore-keys: |
+            g2p-apple-${{ matrix.slice }}-
+
+      - name: Cache cbindgen
+        uses: actions/cache@v4.3.0
+        id: cbindgen-cache
+        with:
+          path: ~/.cargo/bin/cbindgen
+          key: cbindgen-v0.29.2-${{ runner.os }}
+
+      - name: Install cbindgen
+        if: steps.cbindgen-cache.outputs.cache-hit != 'true'
+        run: cargo install cbindgen --version 0.29.2 --locked
+
+      - name: Build slice (cargo per target)
+        working-directory: src/rust
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra TARGETS <<< "${{ matrix.rust_targets }}"
+          for target in "${TARGETS[@]}"; do
+            echo "=== Building $target ==="
+            cargo build \
+              -p piper-plus-g2p \
+              --target "$target" \
+              --release \
+              --features all-languages,naist-jdic,bundled-dicts,ffi
+          done
+
+      - name: Combine slice (lipo for multi-arch universal)
+        working-directory: src/rust
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra TARGETS <<< "${{ matrix.rust_targets }}"
+          mkdir -p "build-g2p-apple/${{ matrix.slice }}"
+          if [ "${#TARGETS[@]}" -eq 1 ]; then
+            cp "target/${TARGETS[0]}/release/libpiper_plus_g2p.a" \
+              "build-g2p-apple/${{ matrix.slice }}/libpiper_plus_g2p.a"
+          else
+            args=()
+            for target in "${TARGETS[@]}"; do
+              args+=("target/$target/release/libpiper_plus_g2p.a")
+            done
+            lipo -create "${args[@]}" \
+              -output "build-g2p-apple/${{ matrix.slice }}/libpiper_plus_g2p.a"
+          fi
+          echo "=== archs ==="
+          lipo -archs "build-g2p-apple/${{ matrix.slice }}/libpiper_plus_g2p.a"
+          echo "=== size ==="
+          ls -la "build-g2p-apple/${{ matrix.slice }}/libpiper_plus_g2p.a"
+
+      - name: Verify FFI symbols are exported
+        working-directory: src/rust
+        run: |
+          set -euo pipefail
+          A="build-g2p-apple/${{ matrix.slice }}/libpiper_plus_g2p.a"
+          echo "=== piper_plus_g2p_* symbols (defined) ==="
+          # nm output for a universal staticlib is large (~10K lines), and
+          # `grep -q` on a piped echo closes the pipe early when the match
+          # is found, which makes echo/awk return SIGPIPE. Combined with
+          # `set -euo pipefail`, that turns a successful match into a
+          # failed step. Avoid pipes entirely by using `case` string
+          # matching against the captured nm output.
+          nm_out=$(nm -gU "$A" 2>/dev/null || true)
+          for sym in \
+            piper_plus_g2p_create \
+            piper_plus_g2p_phonemize \
+            piper_plus_g2p_free \
+            piper_plus_g2p_free_string \
+            piper_plus_g2p_available_languages
+          do
+            case "$nm_out" in
+              *" T _${sym}"*) echo "  ok: $sym" ;;
+              *) echo "::error::staticlib missing FFI symbol: $sym"
+                printf '%s\n' "$nm_out" | grep piper_plus_g2p_ || true
+                exit 1 ;;
+            esac
+          done
+
+      - name: Generate piper_plus_g2p.h via cbindgen
+        working-directory: src/rust/piper-plus-g2p
+        run: |
+          set -euo pipefail
+          cbindgen --config cbindgen.toml --crate piper-plus-g2p --output piper_plus_g2p.h
+          echo "=== generated header ==="
+          cat piper_plus_g2p.h
+          # Sanity: must declare all 5 FFI functions
+          for sym in piper_plus_g2p_create piper_plus_g2p_phonemize piper_plus_g2p_free piper_plus_g2p_free_string piper_plus_g2p_available_languages; do
+            grep -q "$sym" piper_plus_g2p.h || { echo "::error::missing $sym in header"; exit 1; }
+          done
+
+      - name: Stage slice for xcframework
+        working-directory: src/rust
+        run: |
+          set -euo pipefail
+          mkdir -p "g2p-slice-out/lib" "g2p-slice-out/include"
+          cp "build-g2p-apple/${{ matrix.slice }}/libpiper_plus_g2p.a" g2p-slice-out/lib/
+          cp piper-plus-g2p/piper_plus_g2p.h g2p-slice-out/include/
+          cat > g2p-slice-out/include/module.modulemap <<'EOF'
+          module PiperPlusG2PBinary {
+            umbrella header "piper_plus_g2p.h"
+            export *
+            module * { export * }
+          }
+          EOF
+          ls -la g2p-slice-out/lib g2p-slice-out/include
+
+      - name: Upload G2P slice artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: piper-plus-g2p-slice-${{ matrix.slice }}
+          path: src/rust/g2p-slice-out/
+
+  assemble-g2p-xcframework:
+    name: Assemble piper_plus_g2p.xcframework
+    needs: build-g2p-apple
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Download iOS device slice
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: piper-plus-g2p-slice-ios-arm64
+          path: g2p-slices/ios-arm64
+
+      - name: Download iOS simulator slice
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: piper-plus-g2p-slice-ios-arm64_x86_64-simulator
+          path: g2p-slices/ios-arm64_x86_64-simulator
+
+      - name: Download macOS slice
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: piper-plus-g2p-slice-macos-arm64_x86_64
+          path: g2p-slices/macos-arm64_x86_64
+
+      - name: Verify slice contents
+        run: |
+          set -euo pipefail
+          for slice in ios-arm64 ios-arm64_x86_64-simulator macos-arm64_x86_64; do
+            echo "=== ${slice} ==="
+            ls -la "g2p-slices/${slice}/lib"
+            ls -la "g2p-slices/${slice}/include"
+            archs=$(lipo -archs "g2p-slices/${slice}/lib/libpiper_plus_g2p.a")
+            echo "archs: ${archs}"
+            case "${slice}" in
+              ios-arm64)
+                echo "${archs}" | grep -qx 'arm64' \
+                  || { echo "::error::expected arm64 only, got: ${archs}"; exit 1; }
+                ;;
+              ios-arm64_x86_64-simulator|macos-arm64_x86_64)
+                echo "${archs}" | tr ' ' '\n' | sort | tr '\n' ' ' | grep -q 'arm64 x86_64' \
+                  || { echo "::error::expected arm64+x86_64, got: ${archs}"; exit 1; }
+                ;;
+            esac
+            test -f "g2p-slices/${slice}/include/piper_plus_g2p.h"
+            test -f "g2p-slices/${slice}/include/module.modulemap"
+          done
+
+      - name: Create xcframework
+        run: |
+          set -euo pipefail
+          xcodebuild -create-xcframework \
+            -library g2p-slices/ios-arm64/lib/libpiper_plus_g2p.a \
+            -headers g2p-slices/ios-arm64/include \
+            -library g2p-slices/ios-arm64_x86_64-simulator/lib/libpiper_plus_g2p.a \
+            -headers g2p-slices/ios-arm64_x86_64-simulator/include \
+            -library g2p-slices/macos-arm64_x86_64/lib/libpiper_plus_g2p.a \
+            -headers g2p-slices/macos-arm64_x86_64/include \
+            -output piper_plus_g2p.xcframework
+
+          if [ ! -f piper_plus_g2p.xcframework/Info.plist ]; then
+            echo "::error::xcframework Info.plist not generated"
+            exit 1
+          fi
+
+          # Same Privacy Manifest as the synthesis xcframework — the G2P
+          # Rust library does not call any Required Reason API, so the
+          # empty manifest is accurate.
+          cp cmake/PrivacyInfo.xcprivacy piper_plus_g2p.xcframework/PrivacyInfo.xcprivacy
+
+          echo "=== xcframework structure ==="
+          ls -la piper_plus_g2p.xcframework/
+          plutil -p piper_plus_g2p.xcframework/Info.plist
+          find piper_plus_g2p.xcframework -name "libpiper_plus_g2p.a" -exec lipo -archs {} \;
+          find piper_plus_g2p.xcframework -name "module.modulemap" -print -exec cat {} \;
+
+      - name: Zip xcframework
+        run: |
+          set -euo pipefail
+          # `-apple` (not `-ios`) reflects that the xcframework now ships
+          # iOS device + simulator + macOS slices. Consumers reference this
+          # name in Package.swift's binaryTarget URL.
+          zip -ry libpiper_plus_g2p-apple.xcframework.zip piper_plus_g2p.xcframework
+          ls -la libpiper_plus_g2p-apple.xcframework.zip
+          echo "sha256:"
+          shasum -a 256 libpiper_plus_g2p-apple.xcframework.zip
+
+      - name: Upload xcframework artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: libpiper_plus_g2p-apple-xcframework
+          path: libpiper_plus_g2p-apple.xcframework.zip
+
+  build-android:
+    name: Build Android ${{ matrix.abi }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # 3-ABI distribution (arm64-v8a / armeabi-v7a / x86_64) matches
+    # android-build.yml + kotlin-g2p-ci.yml. Pixel 8a / Android 15+ ship 16 KB
+    # pages by default — the 64-bit slices link with `-z,max-page-size=16384`
+    # and are gated by a readelf PT_LOAD alignment check. armeabi-v7a is
+    # exempt because 32-bit Android kernels still use 4 KB pages
+    # (kotlin-g2p-ci.yml comment, NFR-COMPAT-4 / R-4).
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          submodules: true
+
+      - name: Validate version tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          # Anchored fully ($) so that tags like "1.0.0-malicious$(rm)" are rejected.
+          # Allow optional pre-release / build-metadata: 1.0.0, 1.0.0-rc1, 1.0.0+build.5
+          if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$'; then
+            echo "::error::Invalid version tag: v$TAG"
+            exit 1
+          fi
+          echo "Version: $TAG"
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1.6.0
+        id: setup-ndk
+        with:
+          ndk-version: r26c
+
+      - name: Download ONNX Runtime Android
+        run: |
+          curl -L -o onnxruntime-android.aar \
+            "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ONNXRUNTIME_VERSION}/onnxruntime-android-${ONNXRUNTIME_VERSION}.aar"
+          unzip -q onnxruntime-android.aar -d onnxruntime-android
+          # Prepare ORT directory structure for CMake
+          mkdir -p ort-android/lib ort-android/include
+          # Copy ABI-specific shared library (matrix-driven)
+          cp "onnxruntime-android/jni/${{ matrix.abi }}/libonnxruntime.so" ort-android/lib/
+          # Copy headers
+          HEADER_DIR=$(find onnxruntime-android -name "onnxruntime_cxx_api.h" -exec dirname {} \; | head -1)
+          if [ -n "${HEADER_DIR}" ]; then
+            cp -R "${HEADER_DIR}/"* ort-android/include/
+          else
+            # AAR may store headers in headers/ directory
+            HEADER_DIR2=$(find onnxruntime-android -type d -name "headers" | head -1)
+            if [ -n "${HEADER_DIR2}" ]; then
+              cp -R "${HEADER_DIR2}/"* ort-android/include/
+            fi
+          fi
+          echo "ORT_ANDROID_DIR=${{ github.workspace }}/ort-android" >> "$GITHUB_ENV"
+          echo "ORT_ANDROID_LIB=${{ github.workspace }}/ort-android/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+
+      - name: Configure CMake (Android)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          # 16 KB page-size alignment for 64-bit ABIs (Pixel 8a / Android 15+).
+          # armeabi-v7a is exempt because 32-bit kernels use 4 KB pages — adding
+          # the flag is harmless but we keep parity with kotlin-g2p-ci.yml /
+          # android-build.yml convention. The flag is set on both SHARED and EXE
+          # linker flag lists so any auxiliary executables produced by the build
+          # also satisfy the alignment requirement.
+          PAGE_ALIGN_FLAGS=""
+          if [ "${{ matrix.abi }}" != "armeabi-v7a" ]; then
+            PAGE_ALIGN_FLAGS="-Wl,-z,max-page-size=16384"
+          fi
+          # armeabi-v7a requires NEON for ONNX Runtime
+          CMAKE_EXTRA_FLAGS=""
+          if [ "${{ matrix.abi }}" = "armeabi-v7a" ]; then
+            CMAKE_EXTRA_FLAGS="-DANDROID_ARM_NEON=ON"
+          fi
+          cmake -B build-android \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-24 \
+            -DPIPER_PLUS_BUILD_SHARED=ON \
+            -DCMAKE_SHARED_LINKER_FLAGS="${PAGE_ALIGN_FLAGS}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${PAGE_ALIGN_FLAGS}" \
+            -DONNXRUNTIME_DIR="${ORT_ANDROID_DIR}" \
+            -DONNXRUNTIME_LIB="${ORT_ANDROID_LIB}" \
+            -DONNXRUNTIME_INCLUDE_DIR="${ORT_ANDROID_DIR}/include" \
+            $CMAKE_EXTRA_FLAGS
+
+      - name: Build (Android)
+        run: cmake --build build-android --config Release -j$(nproc)
+
+      - name: Locate libpiper_plus.so
+        id: locate-so
+        run: |
+          set -euo pipefail
+          # CMake may emit the .so directly under build-android/ or under
+          # build-android/lib/ depending on PiperPlusShared.cmake's output dir
+          # configuration. Resolve once and export for downstream steps.
+          if [ -f build-android/libpiper_plus.so ]; then
+            SO_PATH="build-android/libpiper_plus.so"
+          elif [ -f build-android/lib/libpiper_plus.so ]; then
+            SO_PATH="build-android/lib/libpiper_plus.so"
+          else
+            echo "::error::libpiper_plus.so not found under build-android/"
+            find build-android -name "libpiper_plus.so" -print || true
+            exit 1
+          fi
+          echo "so-path=${SO_PATH}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: ${SO_PATH}"
+
+      - name: Verify 16 KB page-alignment (NFR-COMPAT-4, R-4)
+        # Pixel 8a / Android 15+ default to 16 KB pages; libpiper_plus.so must
+        # have PT_LOAD alignment 0x4000 (16 KB) or 0x10000 (64 KB) or `mmap`
+        # fails at app launch. armeabi-v7a is exempt because 32-bit Android
+        # kernels still use 4 KB pages — see kotlin-g2p-ci.yml comment.
+        # Pattern mirrors kotlin-g2p-ci.yml's "Verify 16 KB page alignment"
+        # gate (FR-TEST-5).
+        if: matrix.abi != 'armeabi-v7a'
+        run: |
+          set -e
+          LIB="${{ steps.locate-so.outputs.so-path }}"
+          echo "=== readelf -lW ${LIB} (LOAD segments) ==="
+          readelf -lW "$LIB" | grep "LOAD" | head -1
+          if ! readelf -lW "$LIB" | awk '/LOAD/ {print $NF}' | grep -qE '0x4000|0x10000'; then
+            echo "::error::PT_LOAD alignment is not 16 KB (0x4000) or 64 KB (0x10000) for ${{ matrix.abi }}"
+            echo "Full LOAD segment dump:"
+            readelf -lW "$LIB" | grep "LOAD" || true
+            exit 1
+          fi
+          echo "OK: ${{ matrix.abi }} libpiper_plus.so is 16 KB page-aligned"
+
+      - name: Package
+        run: |
+          mkdir -p artifacts/lib artifacts/include
+          cp "${{ steps.locate-so.outputs.so-path }}" artifacts/lib/
+          cp src/cpp/piper_plus.h artifacts/include/
+          # Include ONNX Runtime shared library for Android
+          cp "${ORT_ANDROID_LIB}" artifacts/lib/
+          cd artifacts
+          tar -czf "${{ github.workspace }}/libpiper_plus-android-${{ matrix.abi }}.tar.gz" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: libpiper_plus-android-${{ matrix.abi }}
+          path: libpiper_plus-android-${{ matrix.abi }}.tar.gz
+
+  release:
+    name: Create Release
+    needs: [build-shared, build-ios, build-android, assemble-xcframework, assemble-g2p-xcframework]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    # GitHub Release creation requires `contents: write`. Scoped to this job
+    # only so build / assemble jobs run with workflow-default `contents: read`.
+    # `id-token: write` + `attestations: write` enable SLSA provenance via
+    # actions/attest-build-provenance@v3.2.0 (issued on tag push only).
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout tag commit (for Package.swift checksum verification)
+        uses: actions/checkout@v6.0.2
+        with:
+          # Sparse checkout — Package.swift for the SPM checksum verification,
+          # plus generate_model_card.py / data-sources.yml for M3.2 license
+          # attribution generation (see `Generate LICENSE_ATTRIBUTIONS.md` step
+          # below). All three files are tiny so this stays much lighter than
+          # a full checkout.
+          sparse-checkout: |
+            Package.swift
+            scripts/generate_model_card.py
+            data-sources.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Verify Package.swift checksums are non-placeholder
+        # Catches the C3 footgun: tag was pushed before the maintainer ran
+        # `swift package compute-checksum` and updated Package.swift. SwiftPM
+        # consumers would hit `error: artifact has changed checksum` because
+        # the all-zero placeholder doesn't match the released asset.
+        # See Package.swift header comment for the manual update procedure.
+        # Both `checksum` (synthesis xcframework) and `g2pChecksum`
+        # (PiperPlusG2P xcframework, Issue #387) are validated.
+        run: |
+          set -euo pipefail
+          if ! [ -f Package.swift ]; then
+            echo "::error::Package.swift not found at tag commit"
+            exit 1
+          fi
+          for var in checksum g2pChecksum; do
+            VAL=$(grep -E "^let ${var}" Package.swift | sed -E 's/.*"([^"]+)".*/\1/')
+            if [ -z "${VAL}" ]; then
+              echo "::error::Could not extract ${var} from Package.swift"
+              exit 1
+            fi
+            if echo "${VAL}" | grep -qE '^0+$'; then
+              echo "::error::Package.swift ${var} is the placeholder '${VAL}'."
+              echo "::error::Maintainer must update Package.swift BEFORE tagging:"
+              echo "::error::  1. Run 'workflow_dispatch' to produce both xcframework zips"
+              echo "::error::  2. Run 'swift package compute-checksum <zip>' for each"
+              echo "::error::  3. Update 'let checksum' AND 'let g2pChecksum' in Package.swift"
+              echo "::error::  4. Commit on dev, then tag the same commit"
+              exit 1
+            fi
+            if ! echo "${VAL}" | grep -qE '^[0-9a-f]{64}$'; then
+              echo "::error::Package.swift ${var} '${VAL}' is not a valid SHA-256 hex string"
+              exit 1
+            fi
+            echo "✓ Package.swift ${var} is set: ${VAL}"
+          done
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: artifacts/
+
+      - name: Rename mobile artifacts with version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Rename iOS M1-compat tar.gz (device slice only)
+          if [ -f artifacts/libpiper_plus-ios-arm64/libpiper_plus-ios-arm64.tar.gz ]; then
+            mv artifacts/libpiper_plus-ios-arm64/libpiper_plus-ios-arm64.tar.gz \
+              artifacts/libpiper_plus-ios-arm64/libpiper_plus-ios-arm64-${TAG}.tar.gz
+          fi
+          # M2: Rename iOS xcframework.zip (device + simulator slices, modulemap + PrivacyInfo bundled)
+          if [ -f artifacts/libpiper_plus-ios-xcframework/libpiper_plus-ios.xcframework.zip ]; then
+            mv artifacts/libpiper_plus-ios-xcframework/libpiper_plus-ios.xcframework.zip \
+              artifacts/libpiper_plus-ios-xcframework/libpiper_plus-ios-${TAG}.xcframework.zip
+          fi
+          # Issue #387: Rename G2P xcframework.zip (PiperPlusG2P, no ORT).
+          # `-apple` reflects iOS + macOS slices since v1.14.0 — consumer
+          # Package.swift references this name in `g2pVersion`'s URL.
+          if [ -f artifacts/libpiper_plus_g2p-apple-xcframework/libpiper_plus_g2p-apple.xcframework.zip ]; then
+            mv artifacts/libpiper_plus_g2p-apple-xcframework/libpiper_plus_g2p-apple.xcframework.zip \
+              artifacts/libpiper_plus_g2p-apple-xcframework/libpiper_plus_g2p-apple-${TAG}.xcframework.zip
+          fi
+          # Rename Android artifacts (3 ABIs: arm64-v8a / armeabi-v7a / x86_64).
+          # The build-android matrix produces one tar.gz per ABI; each is
+          # renamed to embed the version tag for the GitHub Release upload.
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            SRC="artifacts/libpiper_plus-android-${abi}/libpiper_plus-android-${abi}.tar.gz"
+            DST="artifacts/libpiper_plus-android-${abi}/libpiper_plus-android-${abi}-${TAG}.tar.gz"
+            if [ -f "${SRC}" ]; then
+              mv "${SRC}" "${DST}"
+            fi
+          done
+
+      - name: Generate LICENSE_ATTRIBUTIONS.md + MODEL_CARD.md (M3.2)
+        # data-sources.yml を canonical source として attribution / model card
+        # を deterministic に生成し、 GitHub Release artifact に同梱する。
+        # binary distribution (libpiper_plus shared lib / xcframework / AAR)
+        # 利用時に再配布対象の dataset attribution を辿れるようにするのが
+        # 目的。 model フィルタは付けない (release artifact は any model 用)。
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/generate_model_card.py validate
+          python3 scripts/generate_model_card.py generate \
+            --model-card MODEL_CARD.md \
+            --attributions LICENSE_ATTRIBUTIONS.md
+          ls -la MODEL_CARD.md LICENSE_ATTRIBUTIONS.md
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec sha256sum {} \; > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Verify Package.swift checksums match xcframework assets
+        # Cross-check: the SHA-256 declared in Package.swift MUST match the
+        # actually-released xcframework zip. If they differ, SwiftPM consumers
+        # hit `error: artifact has changed checksum`. This catches the case
+        # where the maintainer updated Package.swift but used a checksum from
+        # a different (e.g. preview) build. Both PiperPlus and PiperPlusG2P
+        # xcframework checksums are verified.
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          # PiperPlus (synthesis engine) xcframework
+          XCF_ZIP="artifacts/libpiper_plus-ios-xcframework/libpiper_plus-ios-${TAG}.xcframework.zip"
+          if ! [ -f "${XCF_ZIP}" ]; then
+            echo "::error::Released PiperPlus xcframework zip not found at ${XCF_ZIP}"
+            exit 1
+          fi
+          ACTUAL=$(sha256sum "${XCF_ZIP}" | awk '{print $1}')
+          DECLARED=$(grep -E '^let checksum' Package.swift | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "PiperPlus xcframework SHA-256:   ${ACTUAL}"
+          echo "Package.swift declared checksum: ${DECLARED}"
+          if [ "${ACTUAL}" != "${DECLARED}" ]; then
+            echo "::error::PiperPlus checksum mismatch: SwiftPM consumers will fail to resolve."
+            echo "::error::Run 'swift package compute-checksum ${XCF_ZIP}' locally and update Package.swift, then re-tag."
+            exit 1
+          fi
+          echo "✓ PiperPlus checksum matches released xcframework"
+
+          # PiperPlusG2P xcframework (Issue #387, iOS + macOS slices since v1.14.0)
+          G2P_ZIP="artifacts/libpiper_plus_g2p-apple-xcframework/libpiper_plus_g2p-apple-${TAG}.xcframework.zip"
+          if ! [ -f "${G2P_ZIP}" ]; then
+            echo "::error::Released PiperPlusG2P xcframework zip not found at ${G2P_ZIP}"
+            exit 1
+          fi
+          G2P_ACTUAL=$(sha256sum "${G2P_ZIP}" | awk '{print $1}')
+          G2P_DECLARED=$(grep -E '^let g2pChecksum' Package.swift | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "PiperPlusG2P xcframework SHA-256: ${G2P_ACTUAL}"
+          echo "Package.swift declared g2p:       ${G2P_DECLARED}"
+          if [ "${G2P_ACTUAL}" != "${G2P_DECLARED}" ]; then
+            echo "::error::PiperPlusG2P checksum mismatch: SwiftPM consumers will fail to resolve."
+            echo "::error::Run 'swift package compute-checksum ${G2P_ZIP}' locally and update Package.swift, then re-tag."
+            exit 1
+          fi
+          echo "✓ PiperPlusG2P checksum matches released xcframework"
+
+      - name: Generate build provenance attestation
+        # SLSA provenance for all release archives (xcframework / shared libs /
+        # AAR / iOS .tar.gz). Tag-push only — workflow_dispatch and PR don't
+        # produce attestations because this job is gated on
+        # startsWith(github.ref, 'refs/tags/').
+        uses: actions/attest-build-provenance@v3.2.0
+        with:
+          subject-path: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2.6.2
+        with:
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/checksums-sha256.txt
+            MODEL_CARD.md
+            LICENSE_ATTRIBUTIONS.md
+          generate_release_notes: true
+
+      # NOTE: Package.swift checksum is NOT updated by this workflow.
+      # SwiftPM resolves `binaryTarget(url:, checksum:)` against the manifest
+      # as it exists at the resolved tag commit, so a post-tag bump (auto PR
+      # to `dev` after release) does not fix `swift package resolve` for the
+      # just-published tag. Maintainers update Package.swift on `dev` BEFORE
+      # tagging — see Package.swift header comment for the procedure.

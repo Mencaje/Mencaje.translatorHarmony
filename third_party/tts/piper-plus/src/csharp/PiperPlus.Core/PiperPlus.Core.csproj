@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PiperPlus.Core</RootNamespace>
+
+    <!-- NuGet Package Metadata -->
+    <PackageId>PiperPlus.Core</PackageId>
+    <Version>0.3.0</Version>
+    <Authors>ayousanz</Authors>
+    <Description>Piper Plus TTS Core library — ONNX inference, phonemization, config</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ayutaz/piper-plus</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ayutaz/piper-plus</RepositoryUrl>
+    <PackageTags>tts;text-to-speech;piper;onnx;vits</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PiperPlus.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
+  </ItemGroup>
+
+  <!-- Banned API analyzer: enforces Path.Join over Path.Combine (CodeQL
+       cs/path-combine, feedback memory feedback_csharp_path_join.md).
+       BannedSymbols.txt lives under src/csharp/ alongside Directory.Build.props
+       and is referenced from production projects only (test code is exempt
+       because cleaning ~50 occurrences would be out of scope and tests do not
+       ship to NuGet consumers). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="3.3.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)../BannedSymbols.txt"
+                     Visible="false" />
+  </ItemGroup>
+
+  <!-- ZH-EN code-switching loanword dictionary (TICKET-03 C2). Byte-for-byte
+       identical to src/python/g2p/piper_plus_g2p/data/zh_en_loanword.json
+       (CI gate: scripts/check_loanword_consistency.py). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Phonemize/Data/zh_en_loanword.json"
+                      LogicalName="PiperPlus.Core.Phonemize.Data.zh_en_loanword.json" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,98 @@
+# Git
+.git
+.gitignore
+.github
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs/
+*.md
+!docker/README.md
+
+# Test files
+test/
+!test/models/
+!test/models/multilingual-test-medium.onnx
+!test/models/multilingual-test-medium.onnx.json
+tests/
+*_test.py
+test_*.py
+*.test
+
+# Models and data (should be mounted as volumes)
+models/
+datasets/
+checkpoints/
+logs/
+output/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Training artifacts
+lightning_logs/
+wandb/
+
+# Local working files
+pip-test/
+upiper_comparison_samples/
+
+# HuggingFace
+huggingface-space/
+
+# Scripts not needed in Docker
+scripts/evaluation/
+scripts/debug/
+
+# Windows artifacts
+nul
+*.exe
+*.dll
+
+# Large files
+*.wav
+*.mp3
+*.onnx
+!test/models/multilingual-test-medium.onnx
+*.pt
+*.pth
+*.ckpt

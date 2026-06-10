@@ -1,0 +1,433 @@
+name: CI
+
+# 最小権限 (least privilege): test / report のみ、 書込不要。
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - dev
+  push:
+    branches:
+      - dev
+
+env:
+  NODE_VERSION: '24.x'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      rust: ${{ steps.filter.outputs.rust }}
+      csharp: ${{ steps.filter.outputs.csharp }}
+      cpp: ${{ steps.filter.outputs.cpp }}
+      wasm: ${{ steps.filter.outputs.wasm }}
+      go: ${{ steps.filter.outputs.go }}
+      docker: ${{ steps.filter.outputs.docker }}
+      ci-config-cpp: ${{ steps.filter.outputs.ci-config-cpp }}
+      ci-config-csharp: ${{ steps.filter.outputs.ci-config-csharp }}
+      ci-config-python: ${{ steps.filter.outputs.ci-config-python }}
+      ci-config-rust: ${{ steps.filter.outputs.ci-config-rust }}
+      ci-config-wasm: ${{ steps.filter.outputs.ci-config-wasm }}
+      zh-en-data: ${{ steps.filter.outputs.zh-en-data }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dorny/paths-filter@v3.0.3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'src/python/**'
+              - 'src/python_run/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            rust:
+              - 'src/rust/**'
+            csharp:
+              - 'src/csharp/**'
+            cpp:
+              - 'src/cpp/**'
+              - 'CMakeLists.txt'
+              - 'cmake/**'
+            wasm:
+              - 'src/wasm/**'
+              - 'src/rust/piper-wasm/**'
+            go:
+              - 'src/go/**'
+            docker:
+              - 'docker/**'
+            ci-config-cpp:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_build-test-cpp.yml'
+              - '.github/workflows/cpp-tests.yml'
+              - '.github/workflows/cpp-lint.yml'
+            ci-config-csharp:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/csharp-ci.yml'
+              - '.github/workflows/csharp-build-all-platforms.yml'
+            ci-config-python:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/python-tests.yml'
+              - '.github/workflows/python-lint.yml'
+            ci-config-rust:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/rust-tests.yml'
+            ci-config-wasm:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/wasm-build.yml'
+              - '.github/workflows/npm-publish.yml'
+            zh-en-data:
+              # Source-of-truth + 6 mirrors. Any drift in any mirror should
+              # trigger every per-runtime test job, not just the JSON sync gate.
+              - '**/zh_en_loanword.json'
+              # Cross-runtime test matrix and per-runtime fixture mirrors.
+              - '**/zh_en_loanword_matrix.json'
+              - 'scripts/check_loanword_consistency.py'
+              - 'cmake/EmbedJson.cmake'
+              - 'cmake/PiperCommon.cmake'
+              - '.github/workflows/zh-en-loanword-sync.yml'
+            docs:
+              - 'docs/**'
+              - 'README*'
+
+  cpp-tests:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.cpp == 'true' || needs.changes.outputs.ci-config-cpp == 'true' || needs.changes.outputs.zh-en-data == 'true' }}
+    uses: ./.github/workflows/_build-test-cpp.yml
+    with:
+      run-integration-tests: true
+      os-matrix: '["ubuntu-24.04", "macos-latest", "windows-latest"]'
+      build-type-matrix: '["Release", "Debug"]'
+      timeout-minutes: 25
+
+  csharp-tests:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.csharp == 'true' || needs.changes.outputs.ci-config-csharp == 'true' || needs.changes.outputs.zh-en-data == 'true' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5.0.5
+        continue-on-error: true
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/csharp/**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Build C# solution
+        run: dotnet build src/csharp/PiperPlus.sln -c Release
+
+      - name: Check formatting
+        run: dotnet format src/csharp/PiperPlus.sln --verify-no-changes --no-restore
+
+      - name: Run C# tests
+        shell: bash
+        run: |
+          dotnet test src/csharp/PiperPlus.sln -c Release --no-build \
+            --logger "trx;LogFileName=test-results.xml" \
+            --collect:"XPlat Code Coverage" \
+            --settings src/csharp/PiperPlus.runsettings
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: csharp-test-results-${{ matrix.os }}
+          path: |
+            **/TestResults/test-results.xml
+            **/coverage.cobertura.xml
+          retention-days: 30
+
+  csharp-build:
+    runs-on: ${{ matrix.os }}
+    needs: [changes, csharp-tests]
+    if: ${{ needs.changes.outputs.csharp == 'true' || needs.changes.outputs.ci-config-csharp == 'true' || needs.changes.outputs.zh-en-data == 'true' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            rid: linux-x64
+            cross: false
+          - os: ubuntu-24.04
+            rid: linux-arm64
+            cross: true
+          - os: macos-14
+            rid: osx-arm64
+            cross: false
+          - os: macos-14
+            rid: osx-x64
+            cross: true
+          - os: windows-latest
+            rid: win-x64
+            cross: false
+          - os: windows-latest
+            rid: win-arm64
+            cross: true
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5.0.5
+        continue-on-error: true
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ matrix.rid }}-${{ hashFiles('src/csharp/**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-${{ matrix.rid }}-
+            ${{ runner.os }}-nuget-
+
+      - name: Publish self-contained binary
+        shell: bash
+        run: |
+          PUBLISH_ARGS="-c Release -r ${{ matrix.rid }} --self-contained true"
+          PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishSingleFile=true -p:PublishTrimmed=true"
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishReadyToRun=false"
+          else
+            PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishReadyToRun=true"
+          fi
+          dotnet publish src/csharp/PiperPlus.Cli/PiperPlus.Cli.csproj $PUBLISH_ARGS -o publish/
+
+      - name: Verify binary exists
+        run: ls -lh publish/
+        shell: bash
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: piper-plus-cli-${{ matrix.rid }}
+          path: publish/
+          retention-days: 7
+
+  python-tests:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.python == 'true' || needs.changes.outputs.ci-config-python == 'true' || needs.changes.outputs.zh-en-data == 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        python-version: ['3.11']
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache uv downloads
+        uses: actions/cache@v5.0.5
+        continue-on-error: true
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ matrix.python-version }}-${{ hashFiles('uv.lock', 'src/python/pyproject.toml', 'src/python/g2p/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-${{ matrix.python-version }}-
+            ${{ runner.os }}-uv-
+
+      - name: Install system dependencies (Ubuntu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsndfile1-dev build-essential cmake
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir uv
+          uv pip install --system -e "src/python/g2p[all]"
+          cd src/python
+          uv pip install --system -e ".[test,inference]"
+          # For pyopenjtalk-plus dependencies (optional)
+          uv pip install --system sudachipy sudachidict_core || echo "Japanese dependencies optional"
+
+      - name: Build C++ executable
+        run: |
+          mkdir -p build
+          cd build
+          cmake ..
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+
+      - name: Download OpenJTalk dictionary
+        run: |
+          cd build
+          ../scripts/download_openjtalk_dict.sh || true
+
+      - name: Run Python tests
+        run: |
+          cd src/python
+          # `--no-cov` で coverage 計測を無効化 (subset 実行で 70% 閾値を満たさず誤検知)。
+          # 完全な coverage は python-tests.yml の "Run unit tests" で計測。
+          # Exclude inference tests - they require PyTorch and are covered by python-tests.yml.
+          # Use --ignore to prevent collection (import) of files that require torch.
+          python -m pytest tests/ -v --tb=short -m "unit and not training and not benchmark and not inference" --no-cov \
+            --ignore=tests/test_pytorch_onnx_parity.py \
+            --ignore=tests/test_export_onnx.py \
+            --ignore=tests/test_export_onnx_mb_istft.py \
+            --ignore=tests/test_infer_onnx.py \
+            --ignore=tests/test_english_phonemizer.py \
+            --ignore=tests/test_vits.py \
+            --ignore=tests/test_wavlm_discriminator.py
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v5.5.4
+        if: matrix.python-version == '3.11'
+        with:
+          files: ./coverage.xml
+          flags: python
+          name: Python ${{ matrix.python-version }} - ${{ runner.os }}
+
+  rust-tests:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci-config-rust == 'true' || needs.changes.outputs.zh-en-data == 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    defaults:
+      run:
+        working-directory: src/rust
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/rust -> target
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+        continue-on-error: true
+
+      - name: Run tests
+        run: cargo test -p piper-plus --no-fail-fast
+
+      - name: Run tests (naist-jdic)
+        run: cargo test -p piper-plus --features naist-jdic --no-fail-fast
+
+      - name: Run g2p chinese feature tests (ZH-EN dispatch via Phonemizer trait)
+        # `chinese` is enabled by piper-plus-g2p's default features, so this
+        # also runs the #[cfg(feature = "chinese")] dispatch tests added in
+        # multilingual.rs (test_zh_en_dispatch_via_phonemizer_trait etc).
+        run: cargo test -p piper-plus-g2p --no-fail-fast
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Check piper-plus-python
+        run: cargo check -p piper-plus-python
+
+  npm-package-tests:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.wasm == 'true' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci-config-wasm == 'true' || needs.changes.outputs.zh-en-data == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src/wasm/openjtalk-web
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/rust/target
+          key: wasm-cargo-${{ hashFiles('src/rust/Cargo.lock') }}
+          restore-keys: wasm-cargo-
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Build WASM artifacts
+        working-directory: src/rust/piper-wasm
+        run: |
+          wasm-pack build --target web --release --features multilingual
+          rm -rf ../../wasm/openjtalk-web/dist/rust-wasm
+          mv pkg ../../wasm/openjtalk-web/dist/rust-wasm
+
+      - name: Run piper-wasm tests (ja-external)
+        working-directory: src/rust
+        run: cargo test -p piper-plus-wasm --features ja-external --no-fail-fast
+
+      - name: Install dependencies (with local @piper-plus/g2p)
+        run: npm install "@piper-plus/g2p@file:../g2p"
+
+      - name: Run npm package tests
+        run: npm run test:npm-package:all
+
+  # ---------- required status check (single gate) ----------
+  # This job always runs so GitHub branch-protection can use "ci-required"
+  # as the sole required check. It succeeds when every upstream job either
+  # passed or was skipped by paths-filter, and fails if any job failed.
+
+  ci-required:
+    if: always()
+    needs:
+      - cpp-tests
+      - csharp-tests
+      - csharp-build
+      - python-tests
+      - rust-tests
+      - npm-package-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check all job results
+        run: |
+          results=("${{ needs.cpp-tests.result }}" "${{ needs.csharp-tests.result }}" "${{ needs.csharp-build.result }}" "${{ needs.python-tests.result }}" "${{ needs.rust-tests.result }}" "${{ needs.npm-package-tests.result }}")
+          for result in "${results[@]}"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "One or more jobs failed or were cancelled (got: $result)"
+              exit 1
+            fi
+          done
+          echo "All jobs passed or were skipped"

@@ -1,0 +1,84 @@
+Mencaje Translator for HarmonyOS
+Copyright 2024-2026 Mencaje / 萌创匠盒
+
+This product bundles or links the following open source software.
+
+================================================================================
+RUNTIME DEPENDENCIES (shipped or required at runtime)
+================================================================================
+
+CTranslate2
+  Copyright (c) OpenNMT
+  License: MIT
+  https://github.com/OpenNMT/CTranslate2/blob/master/LICENSE
+  Purpose: Offline neural machine translation (NLLB-200)
+
+SentencePiece
+  Copyright Google LLC
+  License: Apache License 2.0
+  https://github.com/google/sentencepiece/blob/master/LICENSE
+  Purpose: Subword tokenization for NLLB
+
+SummerTTS
+  License: MIT (see upstream README)
+  https://github.com/huakunyang/SummerTTS
+  Purpose: Chinese text-to-speech
+
+piper-plus
+  License: MIT
+  https://github.com/ayutaz/piper-plus/blob/master/LICENSE.md
+  Purpose: Japanese and Piper ONNX TTS inference
+
+ONNX Runtime
+  Copyright Microsoft Corporation
+  License: MIT
+  https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+  Purpose: Neural network inference for Piper models
+
+Piper / piper-voices (Rhasspy)
+  License: MIT (voice weights; check per-model MODEL_CARD)
+  https://huggingface.co/rhasspy/piper-voices
+  Purpose: Pre-trained ONNX voice models
+
+eSpeak-NG
+  License: GNU General Public License v3.0
+  https://github.com/espeak-ng/espeak-ng/blob/master/COPYING
+  Purpose: Phonemization for Piper espeak-based voices (statically linked)
+
+OpenJTalk / pyopenjtalk-plus (via piper-plus build)
+  License: Modified BSD; includes MeCab-related components (GPL/LGPL)
+  Purpose: Japanese grapheme-to-phoneme for piper-plus-ja
+
+Eigen
+  License: Mozilla Public License 2.0
+  https://gitlab.com/libeigen/eigen/-/blob/master/COPYING.MPL2
+  Purpose: Linear algebra in SummerTTS (header-only)
+
+Ruy, cpuinfo, spdlog, fmt, cpu_features
+  Bundled with CTranslate2 or piper-plus
+  Licenses: Apache-2.0, BSD-2-Clause, MIT as applicable
+
+================================================================================
+MODEL WEIGHTS (NOT INCLUDED IN THIS GIT REPOSITORY)
+================================================================================
+
+facebook/nllb-200-distilled-600M
+  License: CC BY-NC 4.0 (Meta NLLB License)
+  https://github.com/facebookresearch/fairseq/blob/main/LICENSE
+  WARNING: Non-commercial restriction applies to model use.
+
+================================================================================
+LEGACY / NOT LINKED IN DEFAULT BUILD
+================================================================================
+
+RHVoice (GPL-2.0+), Sherpa-ONNX (Apache-2.0), PyTorch (BSD-3-Clause)
+  Source may remain under third_party/ for reference; excluded from active CMake.
+
+================================================================================
+PLATFORM
+================================================================================
+
+Huawei HarmonyOS SDK, Core Vision Kit
+  Subject to Huawei developer agreements; not open source.
+
+For the full user-facing list see entry/src/main/ets/data/OpenSourceLicenseData.ets

@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""Integration tests for training functionality"""
+
+import importlib.util
+import sys
+import time
+from collections.abc import Callable
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import pytest
+
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+def _wait_until(
+    predicate: Callable[[], bool],
+    timeout: float = 5.0,
+    interval: float = 0.02,
+) -> bool:
+    """Poll predicate() until True or timeout.
+
+    Replaces ``time.sleep(0.2)`` / ``time.sleep(0.3)`` race-prone waits.
+    Returns False if the deadline expired without predicate ever returning
+    True, so callers can produce a meaningful assertion message.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    # Review #455: 以前は ``return predicate()`` としていたが、
+    # deadline 超過後の最後の評価で True が返り得るため "within Ns"
+    # の保証を破っていた (docstring とも不整合)。タイムアウト時は
+    # 必ず False を返すよう修正。
+    return False
+
+
+@pytest.mark.integration
+class TestTrainingIntegration:
+    """Integration tests for training functionality"""
+
+    @pytest.fixture
+    def create_test_dataset(self, tmp_path):
+        """Create a minimal test dataset"""
+        dataset_dir = tmp_path / "test_dataset"
+        dataset_dir.mkdir()
+
+        # Create metadata.csv
+        metadata_file = dataset_dir / "metadata.csv"
+        with open(metadata_file, "w") as f:
+            f.write("speaker|audio_001|Hello world, this is a test.\n")
+            f.write("speaker|audio_002|Another test sentence here.\n")
+            f.write("speaker|audio_003|Testing the training system.\n")
+
+        # Create wavs directory
+        wavs_dir = dataset_dir / "wavs"
+        wavs_dir.mkdir()
+
+        # Create dummy audio files (just empty files for testing)
+        for i in range(1, 4):
+            audio_file = wavs_dir / f"audio_{i:03d}.wav"
+            audio_file.touch()
+
+        return dataset_dir
+
+    def test_training_manager_lifecycle(self, create_test_dataset, tmp_path):
+        """Test complete training lifecycle"""
+        import threading as _threading
+
+        from piper.training_manager import TrainingManager
+
+        manager = TrainingManager()
+        output_dir = tmp_path / "output"
+
+        # Register a callback to track status updates
+        status_updates = []
+        manager.register_callback(
+            "test", lambda status: status_updates.append(status.to_dict())
+        )
+
+        # Use an event to gate when the monitor thread sees end-of-output,
+        # so we can assert is_running() without a race.
+        gate = _threading.Event()
+
+        def _readline_side_effect():
+            """Return training lines, then block until gate is set before EOF."""
+            return _readline_side_effect._next()
+
+        lines = iter(
+            [
+                "Initializing training...\n",
+                "Epoch 1/3\n",
+                "train_loss: 1.5, val_loss: 1.6\n",
+                "Epoch 2/3\n",
+                "train_loss: 0.8, val_loss: 0.9\n",
+                "Epoch 3/3\n",
+                "train_loss: 0.3, val_loss: 0.4\n",
+                "Training completed!\n",
+            ]
+        )
+
+        def _next():
+            try:
+                return next(lines)
+            except StopIteration:
+                gate.wait()  # block until test releases
+                return ""
+
+        _readline_side_effect._next = _next
+
+        # Mock subprocess to simulate training
+        with patch("piper.training_manager.subprocess.Popen") as mock_popen:
+            # Create mock process
+            mock_process = Mock()
+            mock_process.poll.return_value = None
+            mock_process.returncode = 0
+            mock_process.stdout.readline = _readline_side_effect
+            mock_process.wait.return_value = None
+            mock_popen.return_value = mock_process
+
+            # Start training
+            success = manager.start_training(
+                dataset_path=str(create_test_dataset),
+                output_dir=str(output_dir),
+                quality="x-low",
+                batch_size=2,
+                learning_rate=1e-4,
+                num_epochs=3,
+                checkpoint_interval=1,
+                validation_split=0.3,
+            )
+
+            assert success
+
+            # Review #455: TrainingManager.start_training() は status.is_running
+            # を *同期的に* True にしてから monitor thread を起動するため、
+            # ``_wait_until(is_running)`` は monitor thread が回ったかの確認に
+            # ならない。同期 assert で十分。monitor thread が実際に lines を
+            # 処理したかは最終的な ``final_status.best_loss == 0.3`` などで
+            # 間接的に確認する。
+            assert manager.status.is_running
+
+            # Release the monitor thread to see EOF and finish.
+            # こちらは monitor thread が EOF を観測して is_running=False に
+            # するまでを待つ正当な polling (gate.set() 後の thread 状態遷移
+            # は非同期に発生)。
+            gate.set()
+            assert _wait_until(lambda: not manager.status.is_running, timeout=5.0), (
+                "monitor thread did not finish after gate.set() within 5s"
+            )
+
+            # Check final status
+            final_status = manager.get_status()
+            assert not final_status.is_running
+            assert final_status.error is None
+            assert final_status.best_loss == 0.3
+
+            # Check logs
+            logs = manager.get_logs()
+            assert any("Training completed!" in log for log in logs)
+            assert any("Epoch 3/3" in log for log in logs)
+
+            # Check callbacks were triggered
+            assert len(status_updates) > 0
+
+    def test_training_error_handling(self, create_test_dataset, tmp_path):
+        """Test handling of training errors"""
+        from piper.training_manager import TrainingManager
+
+        manager = TrainingManager()
+
+        with patch("piper.training_manager.subprocess.Popen") as mock_popen:
+            # Simulate process that fails immediately
+            mock_process = Mock()
+            mock_process.poll.return_value = 1  # Non-zero exit code
+            mock_process.returncode = 1
+            mock_process.stdout.readline.side_effect = [
+                "Error: Missing required module\n",
+                "",
+            ]
+            mock_process.wait.return_value = None
+            mock_popen.return_value = mock_process
+
+            success = manager.start_training(
+                dataset_path=str(create_test_dataset),
+                output_dir=str(tmp_path / "output"),
+                quality="medium",
+                batch_size=16,
+                learning_rate=1e-4,
+                num_epochs=100,
+                checkpoint_interval=10,
+                validation_split=0.1,
+            )
+
+            assert success  # Start succeeds even if process fails later
+
+            # Wait for the monitor thread to detect the failed process.
+            assert _wait_until(
+                lambda: not manager.get_status().is_running, timeout=3.0
+            ), "monitor thread did not detect process failure within 3s"
+
+            status = manager.get_status()
+            assert not status.is_running
+            assert "exited with code" in (status.error or "")
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("gradio"),
+        reason="gradio is not installed",
+    )
+    def test_webui_training_flow(self, create_test_dataset, tmp_path):
+        """Test complete WebUI training flow"""
+        from piper.webui import (
+            get_training_status,
+            start_training,
+            stop_training,
+            training_manager,
+        )
+
+        # Reset training manager
+        training_manager.process = None
+        training_manager.status.is_running = False
+
+        # Check dependencies (mocked)
+        with patch("piper.webui.check_training_dependencies") as mock_check:
+            mock_check.return_value = []  # No missing dependencies
+
+            with patch("piper.training_manager.subprocess.Popen") as mock_popen:
+                # Mock successful process
+                mock_process = Mock()
+                mock_process.poll.return_value = None
+                mock_process.stdout.readline.return_value = ""
+                mock_popen.return_value = mock_process
+
+                # Start training via WebUI
+                result = start_training(
+                    dataset_path=str(create_test_dataset),
+                    base_model="New Model",
+                    num_speakers=1,
+                    quality="x-low",
+                    batch_size=1,
+                    learning_rate=1e-4,
+                    num_epochs=5,
+                    checkpoint_interval=1,
+                    validation_split=0.1,
+                    output_dir=str(tmp_path / "output"),
+                )
+
+                assert "✅" in result
+                assert "successfully" in result
+
+                # Get status
+                status = get_training_status()
+                assert status["is_running"]
+
+                # Stop training
+                stop_result = stop_training()
+                assert "✅" in stop_result
+
+                # Verify process was terminated
+                mock_process.terminate.assert_called()
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("gradio"),
+        reason="gradio is not installed",
+    )
+    def test_concurrent_training_prevention(self, create_test_dataset, tmp_path):
+        """Test that concurrent training is prevented"""
+        from piper.webui import start_training
+
+        with patch("piper.training_manager.subprocess.Popen") as mock_popen:
+            mock_process = Mock()
+            mock_process.poll.return_value = None  # Process is running
+            mock_process.stdout.readline.return_value = ""
+            mock_popen.return_value = mock_process
+
+            # Mock dependencies check
+            with patch("piper.webui.check_training_dependencies") as mock_check:
+                mock_check.return_value = []
+
+                # Start first training
+                result1 = start_training(
+                    dataset_path=str(create_test_dataset),
+                    base_model="New Model",
+                    num_speakers=1,
+                    quality="x-low",
+                    batch_size=1,
+                    learning_rate=1e-4,
+                    num_epochs=1,
+                    checkpoint_interval=1,
+                    validation_split=0.1,
+                    output_dir=str(tmp_path / "output1"),
+                )
+
+                assert "✅" in result1
+
+                # Try to start second training
+                result2 = start_training(
+                    dataset_path=str(create_test_dataset),
+                    base_model="New Model",
+                    num_speakers=1,
+                    quality="x-low",
+                    batch_size=1,
+                    learning_rate=1e-4,
+                    num_epochs=1,
+                    checkpoint_interval=1,
+                    validation_split=0.1,
+                    output_dir=str(tmp_path / "output2"),
+                )
+
+                assert "⚠️" in result2
+                assert "already running" in result2
+
+    @pytest.mark.skipif(
+        not Path(
+            "/Users/s19447/Desktop/total-piper/piper/src/python/piper_train"
+        ).exists(),
+        reason="piper_train not available",
+    )
+    def test_real_piper_train_invocation(self, create_test_dataset, tmp_path):
+        """Test with real piper_train (if available)"""
+        from piper.training_manager import TrainingManager
+
+        manager = TrainingManager()
+
+        # Start training with minimal settings
+        success = manager.start_training(
+            dataset_path=str(create_test_dataset),
+            output_dir=str(tmp_path / "output"),
+            quality="x-low",
+            batch_size=1,
+            learning_rate=1e-4,
+            num_epochs=1,
+            checkpoint_interval=1,
+            validation_split=0.5,
+            accelerator="cpu",  # Force CPU for testing
+            devices=1,
+        )
+
+        assert success
+
+        # Let it run for a bit
+        time.sleep(2)
+
+        # Stop it
+        manager.stop_training()
+
+        # Check that some output was generated
+        logs = manager.get_logs()
+        assert len(logs) > 0
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-m", "integration"])

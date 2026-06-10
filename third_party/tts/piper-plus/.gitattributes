@@ -1,0 +1,48 @@
+# Default: treat every file as text with LF line endings unless overridden
+# below. A catch-all is required because per-extension enumeration silently
+# missed *.go / *.rs / *.kt etc., letting Windows check them out as CRLF —
+# which breaks gofmt and the byte-for-byte sync gates (QA finding F1).
+* text=auto eol=lf
+
+# Ensure shell scripts always use LF line endings (required for Docker/Linux)
+*.sh text eol=lf
+
+# Ensure Python scripts use LF
+*.py text eol=lf
+
+# C/C++ source files
+*.c text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+
+# C# files
+*.cs text eol=lf
+*.csproj text eol=lf
+*.sln text eol=lf
+*.props text eol=lf
+*.targets text eol=lf
+*.runsettings text eol=lf
+
+# CMake files
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
+
+# JSON files (required for byte-for-byte sync across runtimes — Windows CRLF would break sha256 gate)
+*.json text eol=lf
+
+# Docker files
+Dockerfile* text eol=lf
+.dockerignore text eol=lf
+
+# Windows scripts (keep CRLF)
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Gradle wrapper (must stay POSIX LF; otherwise `./gradlew` fails on Linux/macOS)
+gradlew text eol=lf
+*/gradlew text eol=lf
+gradle/wrapper/gradle-wrapper.properties text eol=lf
+
+# Gradle wrapper jar is binary
+*.jar binary

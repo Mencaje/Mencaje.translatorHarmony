@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Piper English TTS Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #555;
+        }
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            font-family: inherit;
+            resize: vertical;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.3s;
+            margin-right: 10px;
+        }
+        button:hover:not(:disabled) {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+        }
+        .status.success {
+            background: #e8f5e9;
+            color: #388e3c;
+            border: 1px solid #c8e6c9;
+        }
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+        .output-section {
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #f0f0f0;
+        }
+        .output-group {
+            margin-bottom: 20px;
+        }
+        pre {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 14px;
+            line-height: 1.5;
+            border: 1px solid #e9ecef;
+        }
+        .feature-list {
+            background: #fff3e0;
+            border: 1px solid #ffe0b2;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .feature-list h3 {
+            color: #e65100;
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .feature-list ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .feature-list li {
+            margin-bottom: 5px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Piper English TTS Demo</h1>
+        <p class="subtitle">PiperPlus API - English speech synthesis (rule-based G2P + Piper neural model)</p>
+
+        <div id="status" class="status info">
+            Initializing...
+        </div>
+
+        <div class="feature-list">
+            <h3>Features</h3>
+            <ul>
+                <li>Rule-based English G2P phonemization</li>
+                <li>Piper neural ONNX model for high quality speech synthesis</li>
+                <li>Same architecture as Python implementation, running in browser</li>
+                <li>WebAssembly + ONNX Runtime Web</li>
+            </ul>
+        </div>
+
+        <div class="input-group">
+            <label for="inputText">English Text Input</label>
+            <textarea id="inputText" placeholder="Enter English text here">Hello world! This is a test of the Piper text-to-speech system.</textarea>
+        </div>
+
+        <div class="button-group">
+            <button id="synthesizeBtn" disabled>Synthesize</button>
+            <button id="clearBtn">Clear</button>
+        </div>
+
+        <div class="output-section" id="outputSection" style="display: none;">
+            <h2>Results</h2>
+
+            <div class="output-group">
+                <label>Audio:</label>
+                <audio id="audioPlayer" controls style="width: 100%;"></audio>
+            </div>
+
+            <div class="output-group">
+                <label>Details:</label>
+                <pre id="detailsOutput"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "@piper-plus/g2p": "../../../g2p/src/index.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import { PiperPlus } from '../../src/index.js';
+
+        let piper = null;
+
+        const statusEl = document.getElementById('status');
+        const synthesizeBtn = document.getElementById('synthesizeBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const inputText = document.getElementById('inputText');
+        const outputSection = document.getElementById('outputSection');
+        const detailsOutput = document.getElementById('detailsOutput');
+        const audioPlayer = document.getElementById('audioPlayer');
+
+        // Helper: load a script tag dynamically
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+
+        // Initialize
+        async function init() {
+            try {
+                updateStatus('Loading onnxruntime-web...');
+
+                // Load ONNX Runtime from CDN
+                await loadScript('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js');
+
+                updateStatus('Initializing PiperPlus...');
+
+                piper = await PiperPlus.initialize({
+                    model: 'css10',
+                    ort: globalThis.ort,
+                    onProgress: ({ stage, progress, message }) => {
+                        updateStatus(`[${stage}] ${message} (${Math.round(progress * 100)}%)`);
+                    }
+                });
+
+                updateStatus('Ready!', 'success');
+                synthesizeBtn.disabled = false;
+
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                updateStatus(`Initialization error: ${error.message}`, 'error');
+            }
+        }
+
+        // Synthesize speech
+        async function synthesize() {
+            const text = inputText.value.trim();
+            if (!text) {
+                updateStatus('Please enter text.', 'error');
+                return;
+            }
+
+            try {
+                updateStatus('Synthesizing...');
+                synthesizeBtn.disabled = true;
+
+                const audio = await piper.synthesize(text, { language: 'en' });
+
+                // Display audio
+                const wavBlob = audio.toBlob();
+                const audioUrl = URL.createObjectURL(wavBlob);
+                audioPlayer.src = audioUrl;
+
+                // Show details
+                detailsOutput.textContent = JSON.stringify({
+                    text: text,
+                    language: 'en',
+                    duration: audio.duration.toFixed(2) + ' seconds',
+                    sampleRate: audio.sampleRate
+                }, null, 2);
+
+                outputSection.style.display = 'block';
+                updateStatus('Synthesis complete!', 'success');
+
+            } catch (error) {
+                console.error('Synthesis failed:', error);
+                updateStatus(`Synthesis error: ${error.message}`, 'error');
+            } finally {
+                synthesizeBtn.disabled = false;
+            }
+        }
+
+        // Clear output
+        function clearOutput() {
+            inputText.value = '';
+            outputSection.style.display = 'none';
+            detailsOutput.textContent = '';
+            audioPlayer.src = '';
+        }
+
+        // Utility functions
+        function updateStatus(message, type = 'info') {
+            statusEl.className = `status ${type}`;
+            statusEl.textContent = message;
+        }
+
+        // Event listeners
+        synthesizeBtn.addEventListener('click', synthesize);
+        clearBtn.addEventListener('click', clearOutput);
+
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Core dependencies
+# Issue #372: floor must be >= C++ canonical (cmake/OnnxRuntime.cmake)
+onnxruntime>=1.26.0
+numpy>=1.26.4,<3.0
+
+# Japanese phonemization (cross-platform, no espeak-ng dependency)
+pyopenjtalk-plus>=0.4.1.post8
+
+# English phonemization
+g2p-en>=2.1.0
+
+# Chinese phonemization
+pypinyin>=0.55.0

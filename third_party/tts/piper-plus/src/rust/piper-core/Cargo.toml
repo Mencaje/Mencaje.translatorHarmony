@@ -1,0 +1,65 @@
+[package]
+name = "piper-plus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "High-quality neural text-to-speech engine with 8-language support"
+
+[features]
+default = ["naist-jdic", "dict-download"]
+onnx = ["dep:ort", "dep:ndarray", "dep:hound"]
+inference = ["onnx"]  # backward compat alias
+japanese = ["dep:jpreprocess", "piper-plus-g2p/japanese"]
+naist-jdic = ["japanese", "jpreprocess/naist-jdic", "piper-plus-g2p/naist-jdic"]
+playback = ["dep:rodio"]
+download = ["dep:reqwest"]
+dict-download = ["download", "dep:sha2", "dep:flate2", "dep:tar"]
+resample = ["dep:rubato"]
+cuda = []
+coreml = []
+directml = []
+tensorrt = []
+
+[dependencies]
+piper-plus-g2p = { path = "../piper-plus-g2p", version = "0.4.0", features = ["all-languages"] }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "copy-dylibs", "api-24"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+hound = { version = "3.5", optional = true }
+ndarray = { version = "0.17", optional = true }
+regex = "1"
+quick-xml = "0.37"
+jpreprocess = { version = "0.9", optional = true }
+rodio = { version = "0.19", optional = true }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls-native-roots"], default-features = false, optional = true }
+sha2 = { version = "0.10", optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
+rubato = { version = "0.16", optional = true }
+bincode = "1"
+
+[dev-dependencies]
+tempfile = "3"
+hound = "3.5"
+sha2 = "0.10"
+
+# ``bench_phase1`` calls ``PiperVoice::load`` which is gated behind the
+# ``onnx`` feature (see lib.rs ``#[cfg(feature = "onnx")]``). The default
+# CI matrix runs ``cargo test -p piper-plus`` without ``--features onnx``,
+# so without ``required-features`` the example would fail with E0432
+# "unresolved imports `piper_plus::PiperVoice`". Marking it here lets cargo
+# silently skip the example when ``onnx`` isn't enabled, while still
+# building it under feature jobs that include ORT.
+[[example]]
+name = "bench_phase1"
+required-features = ["onnx"]
+
+[lints]
+workspace = true

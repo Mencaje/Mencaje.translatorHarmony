@@ -1,0 +1,111 @@
+# Extended contract gates
+# =========================
+# Six contract specs that previously lacked an automated drift gate. Each
+# of the [[providers]] / [[runtimes]] / file references in the spec files
+# is now checked at PR time so a silent file rename / table deletion / key
+# mismatch is caught before merge.
+#
+# Why a dedicated workflow?  The existing model-quality-gate.yml is
+# scoped to ONNX-export-side artefacts (model files, phoneme set, ORT
+# versions). The six contracts gated here cover orthogonal axes (audio
+# format, EP matrix, streaming API surface, Swift FFI, Portuguese
+# dialect, speaker encoder). Keeping them in their own workflow makes the
+# matrix readable and lets reviewers identify which contract drifted
+# without reading the whole quality-gate log.
+#
+# Source-of-truth contract: docs/spec/<name>-contract.{toml,md}
+# Check script:             scripts/check_<name>_contract.py
+
+name: Extended contract gates
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'docs/spec/audio-format-contract.toml'
+      - 'docs/spec/ort-provider-contract.toml'
+      - 'docs/spec/streaming-api-contract.toml'
+      - 'docs/spec/swift-g2p-contract.toml'
+      - 'docs/spec/pt-dialect-contract.toml'
+      - 'docs/spec/model-sha256-manifest.toml'
+      - 'docs/spec/artifact-retention-contract.toml'
+      - 'docs/spec/test-flake-retry-contract.toml'
+      - 'tests/fixtures/g2p/pt_dialect_parity.json'
+      - 'docs/reference/speaker-encoder-contract.md'
+      - 'docs/spec/pua-contract.toml'  # cross-referenced by swift-g2p
+      - 'src/python/g2p/piper_plus_g2p/data/pua.json'
+      - 'test/fixtures/speaker_encoder_golden.json'
+      - 'scripts/check_audio_format_contract.py'
+      - 'scripts/check_ort_provider_contract.py'
+      - 'scripts/check_streaming_api_contract.py'
+      - 'scripts/check_swift_g2p_contract.py'
+      - 'scripts/check_pt_dialect_contract.py'
+      - 'scripts/check_speaker_encoder_contract.py'
+      - 'scripts/check_model_sha256_manifest.py'
+      - 'scripts/check_artifact_retention.py'
+      - 'scripts/check_test_flake_retry.py'
+      - '.github/workflows/*.yml'  # artifact-retention scans every workflow
+      - 'src/python_run/pyproject.toml'  # test-flake-retry: pytest-rerunfailures dep
+      - '.github/workflows/python-tests.yml'  # test-flake-retry: --reruns flag
+      - '.github/workflows/contract-gates-extended.yml'
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contract-checks:
+    name: ${{ matrix.contract }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # Run on all three OSes. Contract-gate scripts had Windows-only
+        # failures (non-UTF-8 console encoding, path separators) that an
+        # ubuntu-only matrix never caught — see the QA CI-coverage gap.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        contract:
+          - audio-format
+          - ort-provider
+          - streaming-api
+          - swift-g2p
+          - pt-dialect
+          - speaker-encoder
+          - model-sha256-manifest
+          - artifact-retention
+          - test-flake-retry
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      # tomllib is in the stdlib from Python 3.11; pin to 3.13 to match
+      # the other contract gates (e.g. zh-en-loanword-sync.yml).
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Run contract drift check
+        # bash on all three OSes (windows-latest ships Git Bash) so the
+        # case statement below stays portable.
+        shell: bash
+        run: |
+          # Map the matrix contract id to its check script.
+          case "${{ matrix.contract }}" in
+            audio-format)            script=check_audio_format_contract.py ;;
+            ort-provider)            script=check_ort_provider_contract.py ;;
+            streaming-api)           script=check_streaming_api_contract.py ;;
+            swift-g2p)               script=check_swift_g2p_contract.py ;;
+            pt-dialect)              script=check_pt_dialect_contract.py ;;
+            speaker-encoder)         script=check_speaker_encoder_contract.py ;;
+            model-sha256-manifest)   script=check_model_sha256_manifest.py ;;
+            artifact-retention)      script=check_artifact_retention.py ;;
+            test-flake-retry)        script=check_test_flake_retry.py ;;
+            *) echo "::error::unknown contract id ${{ matrix.contract }}"; exit 1 ;;
+          esac
+          python "scripts/$script"

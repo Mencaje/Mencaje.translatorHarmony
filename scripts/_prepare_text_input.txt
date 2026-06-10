@@ -1,0 +1,12 @@
+    def prepare_text_input(self, text):
+
+        text = text.lower()
+        text = text.replace('—', '–').replace('–', '–').replace('‑', '-')
+        text = re.sub(r'[^{}]'.format(self.symbols[3:]), '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        sentence = self.symb_to_ascii(text)
+
+        clean_sentence = re.sub(r'[^a-z1-9\- ]', '', sentence)
+        has_text = len(clean_sentence.replace(' ', '')) > 0
+        return sentence, clean_sentence, has_text

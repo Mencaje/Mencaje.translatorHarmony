@@ -1,0 +1,170 @@
+name: "C# CI"
+
+# 最小権限: dotnet build / test のみ。
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'src/csharp/**'
+      - 'src/python/g2p/piper_plus_g2p/data/zh_en_loanword.json'
+      - 'tests/fixtures/g2p/zh_en_loanword_matrix.json'
+      - 'tests/fixtures/phoneme_timing/**'
+      - 'tests/fixtures/short_text/**'
+      - 'tests/fixtures/ort_session/**'
+      - 'test/fixtures/speaker_encoder_golden.json'
+      - '.github/workflows/csharp-ci.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'src/csharp/**'
+      - 'src/python/g2p/piper_plus_g2p/data/zh_en_loanword.json'
+      - 'tests/fixtures/g2p/zh_en_loanword_matrix.json'
+      - 'tests/fixtures/phoneme_timing/**'
+      - 'tests/fixtures/short_text/**'
+      - 'tests/fixtures/ort_session/**'
+      - 'test/fixtures/speaker_encoder_golden.json'
+      - '.github/workflows/csharp-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-14]
+
+    permissions:
+      contents: read
+      # dorny/test-reporter は GitHub Checks API に annotation を書く
+      # ため checks: write が必須。fork からの pull_request など
+      # GITHUB_TOKEN が read-only に縮退されるトリガーでは Check 生成
+      # に失敗するが、本 workflow は同 repo の PR / push トリガーから
+      # 起動するため通常は問題ない。
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5.0.5
+        continue-on-error: true
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/csharp/**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore src/csharp/PiperPlus.sln
+
+      - name: Build
+        run: dotnet build src/csharp/PiperPlus.sln -c Release --no-restore
+
+      - name: Check formatting
+        run: dotnet format src/csharp/PiperPlus.sln --verify-no-changes --no-restore
+        continue-on-error: false
+
+      - name: Check for vulnerable NuGet packages
+        if: matrix.os == 'ubuntu-24.04'  # 1 OS で十分
+        run: |
+          dotnet list src/csharp/PiperPlus.sln package --vulnerable --include-transitive 2>&1 | tee vuln-report.txt
+          if grep -E "(Critical|High)" vuln-report.txt; then
+            echo "::error::Found Critical or High severity vulnerable packages"
+            exit 1
+          fi
+          echo "No High/Critical vulnerabilities found"
+        shell: bash
+
+      - name: Run C# tests
+        shell: bash
+        run: |
+          dotnet test src/csharp/PiperPlus.sln -c Release --no-build \
+            --blame-hang-timeout 30s \
+            --logger "trx;LogFileName=test-results.xml" \
+            --results-directory TestResults \
+            --collect:"XPlat Code Coverage" \
+            --settings src/csharp/PiperPlus.runsettings
+
+      - name: Publish test results to GitHub Checks tab
+        # 失敗時にも結果を表示するため if: always()。dotnet test が non-zero
+        # で抜けても、TRX を読んで Checks UI に変換する。
+        if: always()
+        uses: dorny/test-reporter@v2.1.1
+        with:
+          name: csharp-tests (${{ matrix.os }})
+          # vstest は LogFileName の通りに直接 TRX を書く場合もあれば、
+          # ``TestResults/<run-id>/test-results.xml`` のように nested
+          # サブディレクトリに書く場合もある (project 構成依存)。
+          # 両ケースを拾うため `**` を中間にも入れる
+          # (review #459 line 97 / 106 への対応)。
+          path: '**/TestResults/**/test-results*.xml'
+          reporter: dotnet-trx
+          # CI ジョブ自体は dotnet test の exit code で fail させる
+          # (既存挙動)。reporter が二重に fail させると signal が
+          # 重複するので、test-reporter は表示のみで終了 0。
+          fail-on-error: false
+        continue-on-error: true
+
+      - name: Generate coverage report
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          dotnet tool install -g dotnet-reportgenerator-globaltool || true
+          reportgenerator \
+            -reports:"**/coverage.cobertura.xml" \
+            -targetdir:"coverage-report" \
+            -reporttypes:"Html;Cobertura;TextSummary" \
+            -classfilters:"-*.Tests.*"
+          cat coverage-report/Summary.txt
+
+      - name: Verify coverage threshold (Ubuntu)
+        if: matrix.os == 'ubuntu-24.04'
+        # Baseline as of 2026-05-10: line coverage 78.5%, branch 72.2%, method
+        # 80.7% (run 25627587120). 70% line is the contractual floor — drop
+        # below this and CI fails. Raise the threshold incrementally as
+        # coverage grows so regressions are caught early.
+        run: |
+          LINE_COV=$(grep -oP 'Line coverage:\s+\K[\d.]+' coverage-report/Summary.txt | head -1)
+          echo "Line coverage: $LINE_COV%"
+          THRESHOLD=70
+          awk -v cov="$LINE_COV" -v thr="$THRESHOLD" 'BEGIN { if (cov+0 < thr+0) { print "::error::Coverage " cov "% below threshold " thr "%"; exit 1 } }'
+        shell: bash
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-24.04'
+        uses: codecov/codecov-action@v5.5.4
+        with:
+          files: ./**/coverage.cobertura.xml
+          flags: csharp
+          fail_ci_if_error: false
+        continue-on-error: true
+
+      - name: Upload coverage report HTML
+        if: matrix.os == 'ubuntu-24.04'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: csharp-coverage-report
+          path: coverage-report/
+          retention-days: 7
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: |
+            **/TestResults/test-results.xml
+            **/coverage.cobertura.xml
+          retention-days: 30

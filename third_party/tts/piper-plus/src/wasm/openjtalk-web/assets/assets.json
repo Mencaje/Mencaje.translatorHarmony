@@ -1,0 +1,16 @@
+{
+  "dictionary": {
+    "version": "1.11",
+    "format": "utf-8",
+    "files": [
+      "char.bin",
+      "matrix.bin",
+      "sys.dic",
+      "unk.dic",
+      "left-id.def",
+      "pos-id.def",
+      "rewrite.def",
+      "right-id.def"
+    ]
+  }
+}

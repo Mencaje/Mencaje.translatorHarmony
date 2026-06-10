@@ -1,0 +1,333 @@
+name: Deploy WebAssembly Demo to GitHub Pages
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'src/wasm/**'
+      - 'src/rust/piper-wasm/**'
+      - '.github/workflows/deploy-webassembly-demo.yml'
+  workflow_dispatch:
+    inputs:
+      deploy_message:
+        description: 'Deployment message'
+        required: false
+        default: 'Manual deployment'
+  # RTF ベンチマーク完了後に Pages を再デプロイして bench 表を含める。
+  # bench データは gh-pages ブランチに保存されており、build ステップで取得する。
+  workflow_run:
+    workflows: ["Multi-Runtime RTF Benchmark"]
+    types: [completed]
+    branches: [dev]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # workflow_run からの起動時は bench が成功した場合のみ Pages を更新する。
+    # push / workflow_dispatch 起動は常に実行。
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/rust/target
+          key: wasm-cargo-${{ hashFiles('src/rust/Cargo.lock') }}
+          restore-keys: wasm-cargo-
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Build WASM
+        working-directory: src/rust/piper-wasm
+        run: |
+          wasm-pack build --target web --release --features multilingual
+          rm -rf ../../wasm/openjtalk-web/dist/rust-wasm
+          mv pkg ../../wasm/openjtalk-web/dist/rust-wasm
+
+      - name: Verify WASM output
+        run: test -f src/wasm/openjtalk-web/dist/rust-wasm/piper_plus_wasm_bg.wasm
+
+      - name: Prepare deployment directory
+        run: |
+          mkdir -p deploy
+          echo "Deploying PiperPlus WebAssembly demo"
+
+          # Function to copy model files from fallback location
+          copy_models_fallback() {
+            local source_dir="$1"
+            local dest_dir="$2"
+
+            if [ -d "$source_dir" ]; then
+              echo "Attempting to copy models from $source_dir..."
+
+              # Copy ONNX files with explicit error handling
+              if ls "$source_dir"/*.onnx 1>/dev/null 2>&1; then
+                cp "$source_dir"/*.onnx "$dest_dir/"
+                echo "ONNX model files copied from $source_dir"
+              else
+                echo "WARNING: No .onnx model files found in $source_dir"
+              fi
+
+              # Copy JSON files with explicit error handling
+              if ls "$source_dir"/*.json 1>/dev/null 2>&1; then
+                cp "$source_dir"/*.json "$dest_dir/"
+                echo "JSON config files copied from $source_dir"
+              else
+                echo "WARNING: No .json config files found in $source_dir"
+              fi
+
+              ls -la "$dest_dir/"
+            else
+              echo "WARNING: Fallback directory $source_dir does not exist"
+            fi
+          }
+
+          # Copy WebAssembly artifacts (only rust-wasm, exclude legacy espeak-ng)
+          if [ -d "src/wasm/openjtalk-web/dist/rust-wasm" ]; then
+            mkdir -p deploy/dist
+            cp -r src/wasm/openjtalk-web/dist/rust-wasm deploy/dist/
+          else
+            echo "ERROR: WebAssembly dist/rust-wasm directory not found!"
+            echo "Please build the WASM files before deployment."
+            exit 1
+          fi
+
+          if [ -d "src/wasm/openjtalk-web/assets" ]; then
+            cp -r src/wasm/openjtalk-web/assets deploy/
+          else
+            mkdir -p deploy/assets
+          fi
+
+          # Handle models directory
+          if [ -d "src/wasm/openjtalk-web/models" ]; then
+            echo "Copying models directory..."
+            ls -la src/wasm/openjtalk-web/models/
+            cp -r src/wasm/openjtalk-web/models deploy/
+            echo "Models copied to deploy/models"
+            ls -la deploy/models/
+
+            # Ensure Japanese model is present, fallback to test/models if needed
+            if [ ! -f "deploy/models/multilingual-test-medium.onnx" ]; then
+              echo "WARNING: multilingual-test-medium.onnx not found in src/wasm/openjtalk-web/models"
+              if [ -f "test/models/multilingual-test-medium.onnx" ]; then
+                echo "Copying multilingual-test-medium.onnx from test/models..."
+                cp test/models/multilingual-test-medium.onnx deploy/models/
+                echo "Japanese model copied from test/models"
+              else
+                echo "ERROR: multilingual-test-medium.onnx not found in either location!"
+                exit 1
+              fi
+            fi
+
+            # Dynamically verify all model files from source are present in deploy
+            echo "Verifying model files..."
+            if [ -d "src/wasm/openjtalk-web/models" ]; then
+              for model_file in src/wasm/openjtalk-web/models/*.onnx src/wasm/openjtalk-web/models/*.json; do
+                if [ -f "$model_file" ]; then
+                  filename=$(basename "$model_file")
+                  if [ ! -f "deploy/models/$filename" ]; then
+                    echo "ERROR: Model file $filename is missing in deploy/models!"
+                    exit 1
+                  fi
+                fi
+              done
+            fi
+
+            # Additionally verify critical model files are present
+            CRITICAL_MODELS="multilingual-test-medium.onnx"
+            for model in $CRITICAL_MODELS; do
+              if [ ! -f "deploy/models/$model" ]; then
+                echo "ERROR: Critical model file $model is missing!"
+                exit 1
+              fi
+              # Also check for corresponding JSON config
+              if [ ! -f "deploy/models/${model}.json" ]; then
+                echo "ERROR: Config file ${model}.json is missing!"
+                exit 1
+              fi
+            done
+            echo "All model files verified successfully"
+          else
+            mkdir -p deploy/models
+            echo "WARNING: models directory not found!"
+            # Use the fallback function to copy from test/models
+            copy_models_fallback "test/models" "deploy/models"
+          fi
+
+          # Copy multilingual demo as the main index page
+          if [ -f "src/wasm/openjtalk-web/test/multilingual-demo/index.html" ]; then
+            cp src/wasm/openjtalk-web/test/multilingual-demo/index.html deploy/index.html
+
+            # Rewrite relative paths for root level:
+            #   ../../../  (3 levels up, e.g. import map)  → ./
+            #   ../../     (2 levels up, e.g. ES imports)  → ./
+            sed -i 's|\.\./\.\./\.\./|./|g' deploy/index.html
+            sed -i 's|\.\./\.\./|./|g' deploy/index.html
+
+            echo "Multilingual demo deployed as main page"
+          fi
+
+          # Copy multilingual demo into subdirectory
+          if [ -d "src/wasm/openjtalk-web/test/multilingual-demo" ]; then
+            mkdir -p deploy/multilingual-demo
+            cp -r src/wasm/openjtalk-web/test/multilingual-demo/* deploy/multilingual-demo/
+
+            # Rewrite relative paths for one-level-deep subdirectory:
+            #   ../../../  (3 levels up)  → ../
+            #   ../../     (2 levels up)  → ../
+            for file in deploy/multilingual-demo/*.html; do
+              if [ -f "$file" ]; then
+                sed -i 's|\.\./\.\./\.\./|../|g' "$file"
+                sed -i 's|\.\./\.\./|../|g' "$file"
+              fi
+            done
+          fi
+
+
+          # Copy all JS src files for PiperPlus API (index.js + all dependencies)
+          if [ -d "src/wasm/openjtalk-web/src" ]; then
+            mkdir -p deploy/src
+            cp src/wasm/openjtalk-web/src/*.js deploy/src/
+            # Copy phonemizer adapters subdirectory
+            if [ -d "src/wasm/openjtalk-web/src/phonemizer" ]; then
+              mkdir -p deploy/src/phonemizer
+              cp src/wasm/openjtalk-web/src/phonemizer/*.js deploy/src/phonemizer/
+            fi
+            echo "Copied JS src files:"
+            ls -laR deploy/src/
+          fi
+
+          # Copy @piper-plus/g2p package (needed by src/index.js and piper-espeak-english.html)
+          if [ -d "src/wasm/g2p/src" ]; then
+            mkdir -p deploy/g2p/src
+            cp -r src/wasm/g2p/src/* deploy/g2p/src/
+          fi
+
+          # RTF multi-runtime bench 表を /bench/multi-runtime/ に含める。
+          # データは gh-pages ブランチの dev/bench/multi-runtime/index.html に保存済み。
+          # ファイルが存在しない場合はスキップ（初回デプロイ時など）。
+          git fetch origin gh-pages 2>/dev/null || true
+          mkdir -p deploy/bench/multi-runtime
+          BENCH_SRC="origin/gh-pages:dev/bench/multi-runtime/index.html"
+          if git show "$BENCH_SRC" > deploy/bench/multi-runtime/index.html 2>/dev/null; then
+            echo "RTF benchmark page included at /bench/multi-runtime/"
+          else
+            echo "No RTF benchmark page in gh-pages yet — skipping"
+            rm -f deploy/bench/multi-runtime/index.html
+            rmdir deploy/bench/multi-runtime 2>/dev/null || true
+            rmdir deploy/bench 2>/dev/null || true
+          fi
+
+          # Create 404 page
+          cp deploy/index.html deploy/404.html
+
+          # Add deployment info
+          echo "Deployment: ${{ github.event.inputs.deploy_message || 'Automated deployment' }}" > deploy/deployment-info.txt
+          echo "Commit: ${{ github.sha }}" >> deploy/deployment-info.txt
+          echo "Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> deploy/deployment-info.txt
+
+      - name: Validate import maps in deployed HTML
+        run: |
+          echo "Validating import maps in deploy/ HTML files..."
+          ERRORS=0
+
+          # Collect bare module specifiers from deployed JS sources
+          BARE_SPECS=$(grep -rhoP "(?:import|export)\s+.*?\s+from\s+['\"]([^'\"./][^'\"]*)['\"]" deploy/src/*.js 2>/dev/null \
+            | grep -oP "['\"][^'\"./][^'\"]*['\"]" | tr -d "'" | tr -d '"' | sort -u || true)
+
+          if [ -z "$BARE_SPECS" ]; then
+            echo "No bare module specifiers found in deploy/src/*.js — skipping"
+          else
+            echo "Bare specifiers found: $BARE_SPECS"
+
+            for html in $(find deploy -name '*.html'); do
+              # Skip HTML files that don't use ES modules
+              if ! grep -q 'type="module"' "$html"; then
+                continue
+              fi
+
+              # Check that an import map exists
+              if ! grep -q 'type="importmap"' "$html"; then
+                echo "ERROR: $html uses ES modules but has no import map"
+                ERRORS=$((ERRORS + 1))
+                continue
+              fi
+
+              # Check each bare specifier is covered
+              for spec in $BARE_SPECS; do
+                if ! grep -q "\"$spec\"" "$html"; then
+                  echo "ERROR: $html is missing import map entry for: $spec"
+                  ERRORS=$((ERRORS + 1))
+                fi
+              done
+
+              # Check import map targets resolve to existing files
+              HTML_DIR=$(dirname "$html")
+              grep -oP '"[^"]+\.js"' "$html" | tr -d '"' | while read -r target; do
+                # Skip bare specifiers (already checked above)
+                if [[ "$target" != ./* && "$target" != ../* ]]; then
+                  continue
+                fi
+                resolved="$HTML_DIR/$target"
+                if [ ! -f "$resolved" ]; then
+                  echo "ERROR: $html import map target missing: $target (resolved: $resolved)"
+                  # Use a temp file since we're in a subshell
+                  touch /tmp/importmap_error
+                fi
+              done
+              if [ -f /tmp/importmap_error ]; then
+                rm /tmp/importmap_error
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+          fi
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "Import map validation failed with $ERRORS error(s)"
+            exit 1
+          fi
+          echo "All import maps validated successfully"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5.0.0
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4.0.0
+        with:
+          path: ./deploy
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4.0.5

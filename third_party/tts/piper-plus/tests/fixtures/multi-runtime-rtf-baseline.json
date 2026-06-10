@@ -1,0 +1,120 @@
+{
+  "_comment": "Cross-runtime RTF / latency baseline consumed by .github/workflows/multi-runtime-rtf.yml. Each leaf is the value observed by scripts/benchmark_runtime.py on the bundled test/models/multilingual-test-medium.onnx model when invoking that runtime's CLI on the matching tests/fixtures/benchmark-texts.json entry. null = placeholder; the first warn-only CI run uploads observed values as workflow artifacts and a follow-up PR commits them here. thresholds.rtf_pct / latency_p95_pct are the +regression tolerances vs baseline; current policy is warn-only (workflow does not fail).",
+  "version": 1,
+  "model": "test/models/multilingual-test-medium.onnx",
+  "texts_fixture": "tests/fixtures/benchmark-texts.json",
+  "thresholds": {
+    "rtf_pct": 0.1,
+    "latency_p50_pct": 0.1,
+    "latency_p95_pct": 0.15
+  },
+  "policy": "warn-only",
+  "benchmark_params": {
+    "n_warmup": 5,
+    "n_runs": 30
+  },
+  "runtimes": {
+    "python": {
+      "short": {
+        "rtf": 4.4317,
+        "latency_p50_ms": 6324.8,
+        "latency_p95_ms": 6757.1
+      },
+      "medium": {
+        "rtf": 1.0438,
+        "latency_p50_ms": 5882.0,
+        "latency_p95_ms": 6208.1
+      },
+      "long": {
+        "rtf": 0.2251,
+        "latency_p50_ms": 7755.6,
+        "latency_p95_ms": 8124.9
+      }
+    },
+    "rust": {
+      "short": {
+        "rtf": 0.8309,
+        "latency_p50_ms": 1310.9,
+        "latency_p95_ms": 1359.6
+      },
+      "medium": {
+        "rtf": 0.2501,
+        "latency_p50_ms": 1614.3,
+        "latency_p95_ms": 1636.8
+      },
+      "long": {
+        "rtf": 0.1039,
+        "latency_p50_ms": 3673.8,
+        "latency_p95_ms": 3697.7
+      }
+    },
+    "go": {
+      "short": {
+        "rtf": 2.3051,
+        "latency_p50_ms": 3125.1,
+        "latency_p95_ms": 3216.7
+      },
+      "medium": {
+        "rtf": 0.5123,
+        "latency_p50_ms": 3158.6,
+        "latency_p95_ms": 3358.1
+      },
+      "long": {
+        "rtf": 0.1464,
+        "latency_p50_ms": 5374.6,
+        "latency_p95_ms": 5467.3
+      }
+    },
+    "csharp": {
+      "short": {
+        "rtf": 2.8462,
+        "latency_p50_ms": 1542.0,
+        "latency_p95_ms": 1627.3
+      },
+      "medium": {
+        "rtf": 0.8929,
+        "latency_p50_ms": 1608.6,
+        "latency_p95_ms": 1811.7
+      },
+      "long": {
+        "rtf": 0.1413,
+        "latency_p50_ms": 1813.8,
+        "latency_p95_ms": 1913.0
+      }
+    },
+    "cpp": {
+      "short": {
+        "rtf": 0.8694,
+        "latency_p50_ms": 1402.4,
+        "latency_p95_ms": 1431.6
+      },
+      "medium": {
+        "rtf": 0.2529,
+        "latency_p50_ms": 1686.2,
+        "latency_p95_ms": 1724.0
+      },
+      "long": {
+        "rtf": 0.0988,
+        "latency_p50_ms": 3573.3,
+        "latency_p95_ms": 3641.5
+      }
+    },
+    "wasm": {
+      "short": {
+        "rtf": null,
+        "latency_p50_ms": null,
+        "latency_p95_ms": null
+      },
+      "medium": {
+        "rtf": null,
+        "latency_p50_ms": null,
+        "latency_p95_ms": null
+      },
+      "long": {
+        "rtf": null,
+        "latency_p50_ms": null,
+        "latency_p95_ms": null
+      }
+    }
+  }
+}

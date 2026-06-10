@@ -1,0 +1,145 @@
+# Project-specific terminology / proper nouns:
+piper
+piperplus
+ayutaz
+ayousanz
+voicebox
+tsukuyomi
+moe
+naist
+jdic
+pyopenjtalk
+openjtalk
+kanji
+katakana
+hiragana
+romaji
+mora
+jpreprocess
+sudachi
+sudachipy
+mecab
+
+# Technical terms / acronyms:
+hop
+hops
+fft
+ffts
+istft
+mb-istft
+mbistft
+gan
+hifi-gan
+hifigan
+vits
+mel
+mfcc
+mfccs
+prosody
+phoneme
+phonemes
+phonemizer
+phonemizers
+phonemize
+phonemes
+pinyin
+pinyins
+loanword
+loanwords
+# intoto — in-toto attestation framework (SLSA L3 provenance file extension)
+intoto
+
+# Common false positives:
+# nd — 2nd, 3rd in ordinals
+nd
+# te — variable name (texture)
+te
+# crate — Rust
+crate
+# nin — Korean phoneme
+nin
+# ist — iSTFT abbreviation
+ist
+# ot — ordinal abbreviations
+ot
+# ans — answer
+ans
+# hist — history (variable)
+hist
+# fo — F0 (fundamental frequency)
+fo
+# oder — decoder/encoder substring
+oder
+
+# Native-language labels (ASCII fallback, intentional in i18n tables):
+# Portugues — Português (ASCII fallback, alongside Espanol / Francais)
+Portugues
+
+# Library / tool names:
+# fmt — fmt library
+fmt
+# astroid — Python AST library (pylint dep); flagged as "asteroid" in uv.lock
+astroid
+ndarray
+onnxruntime
+ortdef
+openjtalk
+spdlog
+quickxml
+pypinyin
+g2pen
+g2pk2
+
+# Acronyms and platform identifiers (domain-specific, not English misspellings):
+# ANE — Apple Neural Engine (Core ML)
+ANE
+# EHR — used as phoneme code (not "her") in g2p golden fixtures
+EHR
+# OptIn — Kotlin `@OptIn` annotation
+OptIn
+# Re-use — written form is legitimate English, codespell prefers "Reuse"
+Re-use
+
+# Documentation examples / non-English fragments left over in docs and tests:
+# These appear in phoneme docs, sample text constants, and small string
+# fixtures.  Most are short tokens that collide with the codespell dictionary
+# (e.g. Swedish "som"/"mor"/"vill", French "fille"/"rouge"/"vie", short
+# variable fragments like "bu"/"ue"/"mot"). Listing them here keeps the
+# baseline clean; if any of these ever appears in a *new* PR, surrounding
+# context should still let reviewers catch real typos manually.
+bord
+bu
+calle
+fille
+manger
+mor
+mot
+rouge
+som
+ue
+vai
+vie
+vill
+# longe — Portuguese "far" (PT-BR/EU dialect parity fixture)
+longe
+
+# Pre-existing real typos that the codespell baseline currently surfaces.
+# Slated for follow-up PRs (one per logical area); listed here only so the
+# baseline gate doesn't block unrelated PRs.  TODO: open Issue tracker entries.
+concatinated
+disjointness
+fro
+padd
+statics
+unparseable
+Unparseable
+
+# Non-English words in webui.py sample_texts (de_DE / fr_FR).  CI workflow
+# already skips webui.py via git ls-files allow-list, but pre-commit's
+# codespell scans whatever git shows as modified.  Listing the foreign words
+# here is more robust than path-based skip (which uses fnmatch and may not
+# match relative paths consistently across CI vs pre-commit).
+# Sie — German "you" (formal)
+Sie
+# informations — French "informations" (plural)
+informations

@@ -1,0 +1,1152 @@
+#!/usr/bin/env python3
+"""
+Tests for OpenAI-compatible API endpoints in inference.py.
+
+Uses FastAPI TestClient with a mocked PiperInferenceEngine
+so no ONNX model is required.
+"""
+
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+
+# Ensure inference.py can be imported from this directory
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from inference import create_app  # noqa: E402
+
+
+@pytest.fixture()
+def mock_engine():
+    """Create a mocked PiperInferenceEngine."""
+    engine = MagicMock()
+    engine.sample_rate = 22050
+    engine.language_id_map = {"ja": 0, "en": 1, "zh": 2, "es": 3, "fr": 4, "pt": 5}
+
+    # synthesize returns 0.5s of silence as int16
+    samples = int(engine.sample_rate * 0.5)
+    engine.synthesize.return_value = np.zeros(samples, dtype=np.int16)
+
+    # synthesize_stream_pcm: yield one PCM chunk per "sentence" (raw int16
+    # little-endian, matching the real engine's output). Default fixture
+    # emits 3 chunks of 100 ms each so streaming tests can verify multi-chunk
+    # receipt without needing a real ONNX model.
+    chunk_samples = int(engine.sample_rate * 0.1)
+
+    def _stream(*_args, **_kwargs):
+        for _ in range(3):
+            yield np.zeros(chunk_samples, dtype=np.int16).astype("<i2").tobytes()
+
+    engine.synthesize_stream_pcm.side_effect = _stream
+
+    # synthesize_with_timing: deterministic 3-phoneme timing result. Tests
+    # that exercise the missing-durations path override this with None.
+    engine.synthesize_with_timing.return_value = {
+        "phonemes": [
+            {"phoneme": "a", "start_ms": 0.0, "end_ms": 100.0, "duration_ms": 100.0},
+            {
+                "phoneme": "b",
+                "start_ms": 100.0,
+                "end_ms": 200.0,
+                "duration_ms": 100.0,
+            },
+            {
+                "phoneme": "c",
+                "start_ms": 200.0,
+                "end_ms": 300.0,
+                "duration_ms": 100.0,
+            },
+        ],
+        "total_duration_ms": 300.0,
+        "sample_rate": engine.sample_rate,
+    }
+    return engine
+
+
+@pytest.fixture()
+def client(mock_engine, monkeypatch):
+    """Create a FastAPI TestClient backed by the mocked engine.
+
+    Rate limiting is disabled here so the existing test suite — which
+    repeatedly hits /v1/audio/speech — does not start failing once
+    slowapi is wired in. Dedicated rate-limit tests build their own
+    app with PIPER_RATE_LIMIT_ENABLED=true.
+    """
+    # Ensure no stray PIPER_API_KEYS leaks in from the host env (would
+    # require Authorization on every request and break legacy tests).
+    monkeypatch.delenv("PIPER_API_KEYS", raising=False)
+    monkeypatch.setenv("PIPER_RATE_LIMIT_ENABLED", "false")
+    # Use this test file as a stand-in for stat().st_mtime
+    app = create_app(mock_engine, __file__)
+    return TestClient(app)
+
+
+# ---- /v1/audio/speech ----
+
+
+class TestOpenAISpeech:
+    def test_basic_synthesis(self, client, mock_engine):
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "こんにちは"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+        assert len(resp.content) > 0
+        mock_engine.synthesize.assert_called_once()
+
+    def test_speed_to_length_scale(self, client, mock_engine):
+        """speed=2.0 should become length_scale=0.5."""
+        client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "speed": 2.0},
+        )
+        call_kwargs = mock_engine.synthesize.call_args
+        assert call_kwargs.kwargs["length_scale"] == pytest.approx(0.5)
+
+    def test_speed_half(self, client, mock_engine):
+        """speed=0.5 should become length_scale=2.0."""
+        client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "speed": 0.5},
+        )
+        call_kwargs = mock_engine.synthesize.call_args
+        assert call_kwargs.kwargs["length_scale"] == pytest.approx(2.0)
+
+    def test_custom_language(self, client, mock_engine):
+        client.post(
+            "/v1/audio/speech",
+            json={"input": "hello", "language": "en"},
+        )
+        call_kwargs = mock_engine.synthesize.call_args
+        assert call_kwargs.kwargs["language"] == "en"
+
+    def test_custom_speaker_id(self, client, mock_engine):
+        client.post(
+            "/v1/audio/speech",
+            json={"input": "hello", "speaker_id": 5},
+        )
+        call_kwargs = mock_engine.synthesize.call_args
+        assert call_kwargs.kwargs["speaker_id"] == 5
+
+    def test_custom_noise_params(self, client, mock_engine):
+        client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "noise_scale": 0.3, "noise_w": 0.5},
+        )
+        call_kwargs = mock_engine.synthesize.call_args
+        assert call_kwargs.kwargs["noise_scale"] == pytest.approx(0.3)
+        assert call_kwargs.kwargs["noise_scale_w"] == pytest.approx(0.5)
+
+    def test_empty_input_returns_400(self, client):
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_whitespace_input_returns_400(self, client):
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "   "},
+        )
+        assert resp.status_code == 400
+
+    def test_unsupported_format_returns_400(self, client):
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "response_format": "mp3"},
+        )
+        assert resp.status_code == 400
+        assert "mp3" in resp.json()["detail"]
+
+    def test_speed_zero_returns_422(self, client):
+        """speed must be > 0."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "speed": 0.0},
+        )
+        assert resp.status_code == 422
+
+    def test_speed_over_max_returns_422(self, client):
+        """speed must be <= 4.0."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "speed": 5.0},
+        )
+        assert resp.status_code == 422
+
+    def test_engine_error_returns_500(self, client, mock_engine):
+        mock_engine.synthesize.side_effect = RuntimeError("ONNX error")
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "test"},
+        )
+        assert resp.status_code == 500
+
+    def test_model_and_voice_ignored(self, client, mock_engine):
+        """model and voice fields are accepted but don't affect synthesis."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "model": "tts-1", "voice": "alloy"},
+        )
+        assert resp.status_code == 200
+
+    def test_default_stream_false_uses_full_synthesize(self, client, mock_engine):
+        """Without ``stream=true`` the original buffered synthesize path is
+        used — keeps existing OpenAI SDK clients (which never pass ``stream``)
+        on the byte-for-byte WAV they already rely on."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},
+        )
+        assert resp.status_code == 200
+        # Buffered path = full WAV (RIFF header AT byte 0). The streaming
+        # path uses 0xFFFFFFFF placeholder sizes; the buffered path uses
+        # the soundfile-computed real sizes, but both start with "RIFF".
+        assert resp.content[:4] == b"RIFF"
+        # Buffered path calls synthesize once, stream path does not.
+        mock_engine.synthesize.assert_called_once()
+        mock_engine.synthesize_stream_pcm.assert_not_called()
+
+
+# ---- /v1/audio/speech stream=true (true chunked WAV) ----
+
+
+class TestOpenAISpeechStreaming:
+    """``stream=true`` (piper-plus extension): real chunked WAV.
+
+    Default behaviour (``stream=false``) is covered by ``TestOpenAISpeech``
+    above. The streaming path must:
+
+    - Route to ``engine.synthesize_stream_pcm`` (not the full ``synthesize``)
+    - Emit a streaming WAV header with ``0xFFFFFFFF`` placeholder sizes
+    - Produce more than one TCP chunk so latency-sensitive consumers benefit
+    - Preserve all request-body semantics (speed, speaker_id, language, ...)
+    """
+
+    def _read_chunks(self, response) -> list[bytes]:
+        return list(response.iter_bytes(chunk_size=None))
+
+    def test_stream_true_routes_to_stream_engine(self, client, mock_engine):
+        with client.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={"input": "Hello. World.", "stream": True},
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers["content-type"] == "audio/wav"
+            chunks = self._read_chunks(resp)
+        # synthesize() must not be touched on the streaming path.
+        mock_engine.synthesize.assert_not_called()
+        mock_engine.synthesize_stream_pcm.assert_called_once()
+        body = b"".join(chunks)
+        assert body[:4] == b"RIFF"
+        assert body[8:12] == b"WAVE"
+
+    def test_stream_true_placeholder_sizes(self, client):
+        """Streaming WAV header MUST use 0xFFFFFFFF for RIFF/data sizes —
+        the conventional 'unknown length' sentinel browsers and ffmpeg
+        accept. A real (non-placeholder) size in a chunked response would
+        misrepresent the body length and break seekable players."""
+        with client.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={"input": "Hello.", "stream": True},
+        ) as resp:
+            body = b"".join(self._read_chunks(resp))
+        # RIFF size at bytes [4:8], data size at bytes [40:44].
+        assert body[4:8] == b"\xff\xff\xff\xff"
+        assert body[40:44] == b"\xff\xff\xff\xff"
+
+    def test_stream_true_multi_chunk_receipt(self, client, mock_engine):
+        """The engine must surface more than one yielded chunk for the
+        latency benefit to be real. ASGI / TestClient batch chunks
+        opportunistically, so we assert at the engine-generator level
+        rather than the wire-level: the streaming path drives
+        ``synthesize_stream_pcm`` to completion (3 chunks per the mock),
+        whereas the non-streaming path never calls it at all. This is the
+        regression we care about — if a future refactor collapses the
+        per-sentence iteration back into a single ``synthesize`` call,
+        this test fails."""
+        # Spy on the generator to count yielded chunks.
+        chunk_count = 0
+
+        original = mock_engine.synthesize_stream_pcm.side_effect
+
+        def _counting_stream(*args, **kwargs):
+            nonlocal chunk_count
+            for piece in original(*args, **kwargs):
+                chunk_count += 1
+                yield piece
+
+        mock_engine.synthesize_stream_pcm.side_effect = _counting_stream
+
+        with client.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={"input": "One. Two. Three.", "stream": True},
+        ) as resp:
+            body = b"".join(self._read_chunks(resp))
+
+        # Mock yields 3 PCM frames (one per "sentence"). If the body had
+        # been buffered into a single response (the bug), the generator
+        # would still be drained — so we also assert the body starts with
+        # the streaming WAV header to prove the chunked path was used.
+        assert chunk_count == 3
+        assert body[:4] == b"RIFF"
+        assert body[4:8] == b"\xff\xff\xff\xff"
+
+    def test_stream_true_speed_propagates(self, client, mock_engine):
+        """speed=2.0 → length_scale=0.5 must propagate on the streaming
+        path too (regression guard: the non-streaming path is covered by
+        TestOpenAISpeech, the streaming path lives in a different branch
+        of openai_speech and was bypassing it pre-PR)."""
+        with client.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={"input": "test", "speed": 2.0, "stream": True},
+        ) as resp:
+            list(self._read_chunks(resp))
+        kwargs = mock_engine.synthesize_stream_pcm.call_args.kwargs
+        assert kwargs["length_scale"] == pytest.approx(0.5)
+
+    def test_stream_true_language_and_speaker(self, client, mock_engine):
+        with client.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={
+                "input": "hi",
+                "stream": True,
+                "language": "en",
+                "speaker_id": 7,
+            },
+        ) as resp:
+            list(self._read_chunks(resp))
+        kwargs = mock_engine.synthesize_stream_pcm.call_args.kwargs
+        assert kwargs["language"] == "en"
+        assert kwargs["speaker_id"] == 7
+
+    def test_stream_true_short_text_warning_still_emitted(self, client):
+        """The X-Piper-Warning header must be set BEFORE the body starts
+        streaming — once the first chunk goes on the wire we can't amend
+        headers. This regression guard ensures the short-text warning
+        propagates on the streaming path too."""
+        with client.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={"input": "hi", "stream": True},
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers.get("x-piper-warning") == "short-text-input"
+            list(self._read_chunks(resp))
+
+    def test_stream_true_unsupported_format_returns_400(self, client):
+        """response_format validation must happen before the streaming
+        branch is taken — otherwise we'd send a chunked WAV header for
+        an unsupported format."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "test", "stream": True, "response_format": "mp3"},
+        )
+        assert resp.status_code == 400
+
+
+# ---- /v1/models ----
+
+
+class TestOpenAIModels:
+    def test_models_list(self, client):
+        resp = client.get("/v1/models")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["object"] == "list"
+        assert len(data["data"]) == 1
+        model = data["data"][0]
+        assert model["id"] == "piper-plus"
+        assert model["object"] == "model"
+        assert model["owned_by"] == "piper-plus"
+        assert isinstance(model["created"], int)
+
+
+# ---- /v1/audio/speech/languages ----
+
+
+class TestLanguages:
+    def test_languages_list(self, client):
+        resp = client.get("/v1/audio/speech/languages")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["languages"] == ["en", "es", "fr", "ja", "pt", "zh"]
+
+    def test_languages_sorted(self, client):
+        resp = client.get("/v1/audio/speech/languages")
+        languages = resp.json()["languages"]
+        assert languages == sorted(languages)
+
+
+# ---- existing endpoints still work ----
+
+
+class TestExistingEndpoints:
+    def test_health(self, client):
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "healthy"}
+
+    def test_synthesize_get(self, client, mock_engine):
+        resp = client.get("/synthesize", params={"text": "hello"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+        mock_engine.synthesize.assert_called_once()
+
+
+# ---- short-text warning ----
+
+
+class TestShortTextWarning:
+    """Strategy E: X-Piper-Warning header for short text inputs."""
+
+    def test_short_text_has_warning_header(self, client):
+        """Text with <=10 non-space chars should get the warning header."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},  # 5 chars
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") == "short-text-input"
+
+    def test_short_text_ja_has_warning_header(self, client):
+        """Japanese short text should also trigger the warning."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "こんにちは", "language": "ja"},  # 5 chars
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") == "short-text-input"
+
+    def test_long_text_no_warning_header(self, client):
+        """Text with >10 non-space chars should NOT get the warning header."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "This is a sufficiently long sentence for testing."},
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") is None
+
+    def test_boundary_10_chars_has_warning(self, client):
+        """Exactly 10 non-space chars should still trigger the warning."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "1234567890"},  # exactly 10 chars
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") == "short-text-input"
+
+    def test_boundary_11_chars_no_warning(self, client):
+        """11 non-space chars should NOT trigger the warning."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "12345678901"},  # 11 chars
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") is None
+
+    def test_spaces_excluded_from_count(self, client):
+        """Spaces should not count toward the character threshold."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "a b c d e"},  # 5 non-space chars
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") == "short-text-input"
+
+    def test_fullwidth_spaces_excluded(self, client):
+        """Full-width spaces (U+3000) should not count."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "あ\u3000い\u3000う"},  # 3 non-space chars
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") == "short-text-input"
+
+    def test_synthesize_get_short_text_warning(self, client):
+        """GET /synthesize should also include the warning for short text."""
+        resp = client.get("/synthesize", params={"text": "hi"})
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") == "short-text-input"
+
+    def test_synthesize_get_long_text_no_warning(self, client):
+        """GET /synthesize should NOT include the warning for long text."""
+        resp = client.get(
+            "/synthesize",
+            params={"text": "This is a long enough sentence."},
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") is None
+
+    def test_ssml_short_text_no_warning(self, client):
+        """SSML text starting with <speak> should NOT trigger short-text warning."""
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "<speak>Hi</speak>"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") is None
+
+    def test_ssml_synthesize_get_no_warning(self, client):
+        """GET /synthesize with SSML should NOT trigger short-text warning."""
+        resp = client.get(
+            "/synthesize",
+            params={"text": "<speak>Hi</speak>"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-piper-warning") is None
+
+
+# ---- PiperInferenceEngine input feed (issue #426) ----
+#
+# Verifies that MB-iSTFT-VITS2 + Voice Cloning models — whose ONNX graphs
+# expose `speaker_embedding` / `speaker_embedding_mask` unconditionally
+# (PR #320) — are fed the canonical zero-embedding + mask=0 fallback so
+# ONNX Runtime does not reject the call with "Required inputs missing".
+# The shape/dtype contract mirrors
+# `src/python_run/piper/voice.py` and `src/python/piper_train/export_onnx.py`.
+
+
+class _FakeOnnxInput:
+    def __init__(self, name: str, shape):
+        self.name = name
+        self.shape = shape
+
+
+class _FakeOnnxOutput:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _FakeOnnxSession:
+    """Minimal ort.InferenceSession stand-in for input-feed assertions."""
+
+    def __init__(self, input_specs, output_names=("output",)):
+        self._inputs = [_FakeOnnxInput(name, shape) for name, shape in input_specs]
+        self._outputs = [_FakeOnnxOutput(name) for name in output_names]
+        self.last_feed: dict | None = None
+
+    def get_inputs(self):
+        return self._inputs
+
+    def get_outputs(self):
+        # PiperInferenceEngine probes ``get_outputs()`` to detect whether the
+        # graph exposes a ``durations`` tensor (needed for the new
+        # /api/phoneme-timing endpoint). Older fakes only had get_inputs().
+        return self._outputs
+
+    def get_providers(self):
+        return ["CPUExecutionProvider"]
+
+    def run(self, _output_names, input_feed):
+        self.last_feed = input_feed
+        # Return a tiny 1-channel waveform: shape (1, 1, T) matches the
+        # real model output, which `synthesize` squeezes to 1-D.
+        return [np.zeros((1, 1, 1024), dtype=np.float32)]
+
+
+@pytest.fixture()
+def engine_factory(monkeypatch, tmp_path):
+    """Build a PiperInferenceEngine wired to a fake ONNX session."""
+    import inference as inference_mod
+
+    def _factory(input_specs):
+        session = _FakeOnnxSession(input_specs)
+        monkeypatch.setattr(
+            inference_mod, "create_session_with_cache", lambda *a, **kw: session
+        )
+        monkeypatch.setattr(inference_mod, "warmup_onnx_session", lambda *a, **kw: None)
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            '{"phoneme_id_map": {"_": [0], "a": [1], "k": [2], "o": [3], "n": [4],'
+            ' "i": [5], "ch": [6], "w": [7], "ha": [8]},'
+            ' "language_id_map": {"ja": 0, "en": 1}}'
+        )
+        engine = inference_mod.PiperInferenceEngine(
+            "/nonexistent/model.onnx", str(config_path)
+        )
+        return engine, session
+
+    return _factory
+
+
+class TestSpeakerEmbeddingFeed:
+    """Issue #426: MB-iSTFT-VITS2 ONNX models must receive
+    speaker_embedding / speaker_embedding_mask or ORT raises
+    "Required inputs missing"."""
+
+    def test_detects_speaker_embedding_input(self, engine_factory):
+        engine, _ = engine_factory(
+            [
+                ("input", ["batch", "seq"]),
+                ("input_lengths", ["batch"]),
+                ("scales", [3]),
+                ("sid", ["batch"]),
+                ("prosody_features", ["batch", "seq", 3]),
+                ("lid", ["batch"]),
+                ("speaker_embedding", ["batch", 256]),
+                ("speaker_embedding_mask", ["batch", 1]),
+            ]
+        )
+        assert engine.has_speaker_embedding is True
+        assert engine.speaker_emb_dim == 256
+
+    def test_absent_when_input_missing(self, engine_factory):
+        engine, _ = engine_factory(
+            [
+                ("input", ["batch", "seq"]),
+                ("input_lengths", ["batch"]),
+                ("scales", [3]),
+                ("sid", ["batch"]),
+            ]
+        )
+        assert engine.has_speaker_embedding is False
+        assert engine.speaker_emb_dim is None
+        # Synthesize must NOT inject speaker_embedding when the model
+        # does not declare it (would raise InvalidArgument).
+        engine.synthesize("a")
+        feed_keys = set(engine.model.last_feed.keys())
+        assert "speaker_embedding" not in feed_keys
+        assert "speaker_embedding_mask" not in feed_keys
+
+    def test_synthesize_feeds_zero_embedding_with_mask_zero(self, engine_factory):
+        """Canonical contract: zero embedding + mask=0 → emb_g(sid) fallback.
+        Mirrors src/python_run/piper/voice.py:200-208."""
+        engine, session = engine_factory(
+            [
+                ("input", ["batch", "seq"]),
+                ("input_lengths", ["batch"]),
+                ("scales", [3]),
+                ("sid", ["batch"]),
+                ("prosody_features", ["batch", "seq", 3]),
+                ("lid", ["batch"]),
+                ("speaker_embedding", ["batch", 256]),
+                ("speaker_embedding_mask", ["batch", 1]),
+            ]
+        )
+        engine.synthesize("a")
+
+        assert session.last_feed is not None
+        assert "speaker_embedding" in session.last_feed
+        assert "speaker_embedding_mask" in session.last_feed
+
+        spk_emb = session.last_feed["speaker_embedding"]
+        assert spk_emb.shape == (1, 256)
+        assert spk_emb.dtype == np.float32
+        assert np.all(spk_emb == 0.0)
+
+        mask = session.last_feed["speaker_embedding_mask"]
+        assert mask.shape == (1, 1)
+        assert mask.dtype == np.int64
+        # mask=0 routes the model to emb_g(sid), not the zero vector.
+        assert mask[0, 0] == 0
+
+    def test_dynamic_dim_falls_back_to_256(self, engine_factory):
+        """If emb_dim is a string (dynamic axis), fall back to the
+        ECAPA-TDNN canonical 256-d default."""
+        engine, session = engine_factory(
+            [
+                ("input", ["batch", "seq"]),
+                ("input_lengths", ["batch"]),
+                ("scales", [3]),
+                ("sid", ["batch"]),
+                ("speaker_embedding", ["batch", "emb_dim"]),
+                ("speaker_embedding_mask", ["batch", 1]),
+            ]
+        )
+        # When emb_dim is non-integer, int() raises — that's a graph we
+        # haven't seen in the wild, but the fallback in synthesize keeps
+        # it from crashing. Force the scenario by clearing the cached dim.
+        engine.speaker_emb_dim = None
+        engine.synthesize("a")
+        assert session.last_feed["speaker_embedding"].shape == (1, 256)
+
+    def test_malformed_export_only_speaker_embedding_raises(self, engine_factory):
+        """PR #320 contract: speaker_embedding and speaker_embedding_mask
+        are declared as a pair. A model that declares only one is a
+        malformed export and must fail loud at load time, not at first
+        request with a cryptic ORT error."""
+        with pytest.raises(RuntimeError, match="Malformed ONNX export"):
+            engine_factory(
+                [
+                    ("input", ["batch", "seq"]),
+                    ("input_lengths", ["batch"]),
+                    ("scales", [3]),
+                    ("sid", ["batch"]),
+                    ("speaker_embedding", ["batch", 256]),
+                    # speaker_embedding_mask intentionally omitted
+                ]
+            )
+
+    def test_malformed_export_only_mask_raises(self, engine_factory):
+        """Inverse of the above — mask declared but embedding missing."""
+        with pytest.raises(RuntimeError, match="Malformed ONNX export"):
+            engine_factory(
+                [
+                    ("input", ["batch", "seq"]),
+                    ("input_lengths", ["batch"]),
+                    ("scales", [3]),
+                    ("sid", ["batch"]),
+                    ("speaker_embedding_mask", ["batch", 1]),
+                    # speaker_embedding intentionally omitted
+                ]
+            )
+
+
+# ---- Auth (Bearer token) ----
+#
+# PIPER_API_KEYS unset → auth disabled (backward compatible).
+# PIPER_API_KEYS set    → Authorization: Bearer <key> required, else 401.
+# /health is always exempt so load balancer probes don't get 401.
+#
+# Auth/rate-limit settings are resolved inside create_app(), so each test
+# builds a fresh app via monkeypatched env vars. Limiter state is per-app
+# so default-disabled rate-limit tests don't interact with these.
+
+
+@pytest.fixture()
+def make_client(mock_engine, monkeypatch):
+    """Factory that builds a TestClient with env-var-driven config."""
+
+    def _make(**env):
+        for key, val in env.items():
+            if val is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, val)
+        # Disable rate limiting by default for non-rate-limit tests so the
+        # 30/minute speech limit doesn't bleed across cases.
+        if "PIPER_RATE_LIMIT_ENABLED" not in env:
+            monkeypatch.setenv("PIPER_RATE_LIMIT_ENABLED", "false")
+        app = create_app(mock_engine, __file__)
+        return TestClient(app)
+
+    return _make
+
+
+class TestAuthDisabledByDefault:
+    """Backward compat: PIPER_API_KEYS unset → no auth required."""
+
+    def test_speech_no_auth_header_succeeds(self, make_client):
+        client = make_client(PIPER_API_KEYS=None)
+        resp = client.post("/v1/audio/speech", json={"input": "hello"})
+        assert resp.status_code == 200
+
+    def test_models_no_auth_header_succeeds(self, make_client):
+        client = make_client(PIPER_API_KEYS=None)
+        resp = client.get("/v1/models")
+        assert resp.status_code == 200
+
+    def test_empty_string_treated_as_unset(self, make_client):
+        """PIPER_API_KEYS='' (empty) must NOT enable auth."""
+        client = make_client(PIPER_API_KEYS="")
+        resp = client.post("/v1/audio/speech", json={"input": "hello"})
+        assert resp.status_code == 200
+
+
+class TestAuthEnabled:
+    """PIPER_API_KEYS set → Bearer required on protected endpoints."""
+
+    # Fixture token used in env vars + Authorization headers below.
+    # Intentionally NOT shaped like `sk-...` to avoid generic-api-key
+    # heuristics (gitleaks, GitHub secret scanning) misfiring on test data.
+    KEY = "piper-unit-test-token-00"  # gitleaks:allow
+
+    def test_speech_missing_auth_returns_401(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.post("/v1/audio/speech", json={"input": "hello"})
+        assert resp.status_code == 401
+        assert resp.headers.get("www-authenticate") == "Bearer"
+
+    def test_speech_valid_bearer_returns_200(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},
+            headers={"Authorization": f"Bearer {self.KEY}"},
+        )
+        assert resp.status_code == 200
+
+    def test_speech_wrong_key_returns_401(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},
+            headers={"Authorization": "Bearer wrong-key"},
+        )
+        assert resp.status_code == 401
+
+    def test_speech_malformed_header_returns_401(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        # No "Bearer " prefix
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},
+            headers={"Authorization": self.KEY},
+        )
+        assert resp.status_code == 401
+
+    def test_speech_basic_scheme_rejected(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},
+            headers={"Authorization": f"Basic {self.KEY}"},
+        )
+        assert resp.status_code == 401
+
+    def test_bearer_scheme_case_insensitive(self, make_client):
+        """Authorization scheme matches case-insensitively (RFC 7235)."""
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},
+            headers={"Authorization": f"bearer {self.KEY}"},
+        )
+        assert resp.status_code == 200
+
+    def test_multiple_keys_any_valid(self, make_client):
+        """Comma-separated keys: any one of them authorizes."""
+        client = make_client(PIPER_API_KEYS=f"key-one,{self.KEY},key-three")
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"input": "hello"},
+            headers={"Authorization": "Bearer key-three"},
+        )
+        assert resp.status_code == 200
+
+    def test_health_skips_auth(self, make_client):
+        """/health must remain open for load balancer probes."""
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "healthy"}
+
+    def test_models_requires_auth(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.get("/v1/models")
+        assert resp.status_code == 401
+
+    def test_models_with_auth_succeeds(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.get(
+            "/v1/models",
+            headers={"Authorization": f"Bearer {self.KEY}"},
+        )
+        assert resp.status_code == 200
+
+    def test_languages_requires_auth(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.get("/v1/audio/speech/languages")
+        assert resp.status_code == 401
+
+    def test_synthesize_requires_auth(self, make_client):
+        client = make_client(PIPER_API_KEYS=self.KEY)
+        resp = client.get("/synthesize", params={"text": "hi"})
+        assert resp.status_code == 401
+
+
+# ---- Rate limiting (slowapi, per-IP) ----
+
+
+class TestRateLimitDisabled:
+    """PIPER_RATE_LIMIT_ENABLED=false → no 429 regardless of request volume."""
+
+    def test_speech_no_429_when_disabled(self, make_client):
+        client = make_client(
+            PIPER_RATE_LIMIT_ENABLED="false",
+            PIPER_RATE_LIMIT_SPEECH="2/minute",
+        )
+        for _ in range(5):
+            resp = client.post("/v1/audio/speech", json={"input": "hi"})
+            assert resp.status_code == 200
+
+
+class TestRateLimitEnabled:
+    """PIPER_RATE_LIMIT_ENABLED=true (default) → 429 after limit exceeded."""
+
+    def test_speech_429_after_limit(self, make_client):
+        # 2/minute keeps the test fast and deterministic without sleeping.
+        client = make_client(
+            PIPER_RATE_LIMIT_ENABLED="true",
+            PIPER_RATE_LIMIT_SPEECH="2/minute",
+        )
+        # First two should pass, third should be 429.
+        assert client.post("/v1/audio/speech", json={"input": "a"}).status_code == 200
+        assert client.post("/v1/audio/speech", json={"input": "b"}).status_code == 200
+        resp = client.post("/v1/audio/speech", json={"input": "c"})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") is not None
+        # Retry-After should parse as a non-negative integer (seconds).
+        assert int(resp.headers["retry-after"]) >= 0
+
+    def test_health_never_rate_limited(self, make_client):
+        """/health must never be rate-limited (LB probes hit it every few s)."""
+        client = make_client(
+            PIPER_RATE_LIMIT_ENABLED="true",
+            PIPER_RATE_LIMIT_SPEECH="1/minute",
+            PIPER_RATE_LIMIT_LIGHT="1/minute",
+        )
+        # Hit /health well beyond any plausible limit.
+        for _ in range(20):
+            resp = client.get("/health")
+            assert resp.status_code == 200
+
+    def test_synthesize_get_shares_speech_limit(self, make_client):
+        """GET /synthesize uses the same heavy limit as POST /v1/audio/speech."""
+        client = make_client(
+            PIPER_RATE_LIMIT_ENABLED="true",
+            PIPER_RATE_LIMIT_SPEECH="1/minute",
+        )
+        assert client.get("/synthesize", params={"text": "a"}).status_code == 200
+        resp = client.get("/synthesize", params={"text": "b"})
+        assert resp.status_code == 429
+
+    def test_light_endpoint_has_separate_limit(self, make_client):
+        """/v1/models uses the light limit, independent of speech limit."""
+        client = make_client(
+            PIPER_RATE_LIMIT_ENABLED="true",
+            PIPER_RATE_LIMIT_SPEECH="1/minute",
+            PIPER_RATE_LIMIT_LIGHT="3/minute",
+        )
+        # Exhaust speech limit — should not affect /v1/models.
+        client.post("/v1/audio/speech", json={"input": "a"})
+        client.post("/v1/audio/speech", json={"input": "b"})  # 429 expected
+        # /v1/models still has its own bucket.
+        for _ in range(3):
+            assert client.get("/v1/models").status_code == 200
+        # Fourth /v1/models hit exhausts the light limit.
+        assert client.get("/v1/models").status_code == 429
+
+
+# ---- /api/phoneme-timing ----
+#
+# Parity with the endpoint exposed by ``piper.http_server`` (in
+# ``src/python_run/``). Required for downstream consumers (Wyoming, Home
+# Assistant, browser captions) that need phoneme-level timestamps for
+# subtitle alignment and karaoke. The /v1/audio/speech path is OpenAI-shaped
+# and intentionally does not emit timing; this endpoint is the canonical
+# place to fetch it without re-synthesizing through OpenAI clients.
+
+
+class TestPhonemeTimingEndpoint:
+    """``POST /api/phoneme-timing`` — JSON timing array, voice from cache."""
+
+    def test_basic_timing_response(self, client, mock_engine):
+        resp = client.post(
+            "/api/phoneme-timing",
+            json={"text": "abc", "language": "ja"},
+        )
+        assert resp.status_code == 200
+        # Cross-runtime canonical shape (matches Rust / Go / C++ / C#
+        # TimingResult). Drift here = wire-format break for downstream
+        # consumers that share the timing-contract spec.
+        data = resp.json()
+        assert "phonemes" in data
+        assert "total_duration_ms" in data
+        assert "sample_rate" in data
+        assert isinstance(data["phonemes"], list)
+        assert len(data["phonemes"]) == 3
+        first = data["phonemes"][0]
+        for key in ("phoneme", "start_ms", "end_ms", "duration_ms"):
+            assert key in first
+
+    def test_timing_uses_engine_cache(self, client, mock_engine):
+        """The voice load must come from the cached engine — synthesize_with_timing
+        is the dependency injected via create_app, never reloaded per request."""
+        client.post("/api/phoneme-timing", json={"text": "hello"})
+        client.post("/api/phoneme-timing", json={"text": "world"})
+        # Two calls to the endpoint = two calls to the cached engine method,
+        # never a fresh PiperInferenceEngine() construction.
+        assert mock_engine.synthesize_with_timing.call_count == 2
+
+    def test_timing_propagates_language(self, client, mock_engine):
+        client.post(
+            "/api/phoneme-timing",
+            json={"text": "hello", "language": "en"},
+        )
+        kwargs = mock_engine.synthesize_with_timing.call_args.kwargs
+        assert kwargs["language"] == "en"
+
+    def test_timing_propagates_speaker_and_scales(self, client, mock_engine):
+        client.post(
+            "/api/phoneme-timing",
+            json={
+                "text": "a",
+                "speaker_id": 3,
+                "length_scale": 1.25,
+                "noise_scale": 0.5,
+                "noise_w": 0.6,
+            },
+        )
+        kwargs = mock_engine.synthesize_with_timing.call_args.kwargs
+        assert kwargs["speaker_id"] == 3
+        assert kwargs["length_scale"] == pytest.approx(1.25)
+        assert kwargs["noise_scale"] == pytest.approx(0.5)
+        assert kwargs["noise_scale_w"] == pytest.approx(0.6)
+
+    def test_timing_empty_text_returns_400(self, client):
+        resp = client.post("/api/phoneme-timing", json={"text": ""})
+        assert resp.status_code == 400
+
+    def test_timing_whitespace_only_returns_400(self, client):
+        resp = client.post("/api/phoneme-timing", json={"text": "   "})
+        assert resp.status_code == 400
+
+    def test_timing_missing_durations_returns_400(self, client, mock_engine):
+        """Older HiFi-GAN exports lack the ``durations`` output tensor.
+        The endpoint must return 400 (model-doesn't-support) rather than
+        500 (server error) so callers can fall back gracefully."""
+        mock_engine.synthesize_with_timing.return_value = None
+        resp = client.post("/api/phoneme-timing", json={"text": "abc"})
+        assert resp.status_code == 400
+        assert "duration" in resp.json()["detail"].lower()
+
+    def test_timing_engine_error_returns_500(self, client, mock_engine):
+        mock_engine.synthesize_with_timing.side_effect = RuntimeError("boom")
+        resp = client.post("/api/phoneme-timing", json={"text": "abc"})
+        assert resp.status_code == 500
+
+    def test_timing_returns_application_json(self, client):
+        resp = client.post("/api/phoneme-timing", json={"text": "abc"})
+        assert resp.headers["content-type"].startswith("application/json")
+
+
+# ---- CORS ----
+
+
+class TestCORS:
+    def test_cors_headers(self, client):
+        resp = client.options(
+            "/v1/audio/speech",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert resp.headers.get("access-control-allow-origin") is not None
+
+
+# ---- Real OpenAI SDK end-to-end ----
+#
+# The TestClient-based tests above exercise the FastAPI app directly. They
+# do not validate that the *real* `openai` Python SDK can talk to our
+# OpenAI-compatible endpoints. Downstream consumers (existing OpenAI-using
+# apps re-pointed at our server via `base_url`) are the actual integration
+# surface, so we drive a real `openai.AsyncOpenAI` client through
+# `httpx.ASGITransport` straight at our ASGI app — no uvicorn process, no
+# port binding, but the request/response path goes through the SDK's
+# serialisation, retry, and response-parsing code exactly as it would in
+# production. AsyncOpenAI is required because httpx.ASGITransport is
+# async-only; a sync openai.OpenAI client wrapped around it deadlocks.
+try:
+    import httpx
+    from openai import AsyncOpenAI
+
+    OPENAI_SDK_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised only when openai is absent
+    OPENAI_SDK_AVAILABLE = False
+
+
+@pytest.mark.skipif(
+    not OPENAI_SDK_AVAILABLE,
+    reason="openai / httpx SDK not installed in this environment",
+)
+@pytest.mark.asyncio
+class TestOpenAISDKEndToEnd:
+    """E2E tests using the real openai Python SDK against our ASGI app.
+
+    Catches issues that mock-style tests miss: SDK version drift,
+    request/response serialisation, parameter coercion (e.g. speed type),
+    and rejection of unsupported response_format values.
+    """
+
+    def _make_sdk_client(self, mock_engine) -> "AsyncOpenAI":
+        app = create_app(mock_engine, __file__)
+        transport = httpx.ASGITransport(app=app)
+        http_client = httpx.AsyncClient(
+            transport=transport,
+            base_url="http://piper-plus.test",
+            timeout=30.0,
+        )
+        return AsyncOpenAI(
+            api_key="sk-piper-test-not-a-real-key",
+            base_url="http://piper-plus.test/v1",
+            http_client=http_client,
+        )
+
+    async def test_audio_speech_create_returns_wav_bytes(self, mock_engine):
+        sdk = self._make_sdk_client(mock_engine)
+        try:
+            response = await sdk.audio.speech.create(
+                model="piper-plus",
+                voice="ja",
+                input="こんにちは",
+            )
+            data = await response.aread()
+            assert len(data) > 0
+            # Real WAV (RIFF header) rather than HTML/JSON error body.
+            assert data[:4] == b"RIFF", f"expected RIFF header, got {data[:8]!r}"
+            assert data[8:12] == b"WAVE"
+            mock_engine.synthesize.assert_called_once()
+        finally:
+            await sdk.close()
+
+    async def test_audio_speech_speed_propagates_through_sdk(self, mock_engine):
+        sdk = self._make_sdk_client(mock_engine)
+        try:
+            await sdk.audio.speech.create(
+                model="piper-plus",
+                voice="en",
+                input="hello",
+                speed=2.0,
+            )
+            call_kwargs = mock_engine.synthesize.call_args.kwargs
+            assert call_kwargs["length_scale"] == pytest.approx(0.5)
+        finally:
+            await sdk.close()
+
+    async def test_audio_speech_unsupported_response_format_rejected(self, mock_engine):
+        sdk = self._make_sdk_client(mock_engine)
+        # APIStatusError 400 expected; catch via openai's generic exception so
+        # the test does not depend on internal class paths that vary between
+        # SDK majors.
+        from openai import OpenAIError
+
+        try:
+            with pytest.raises(OpenAIError):
+                await sdk.audio.speech.create(
+                    model="piper-plus",
+                    voice="ja",
+                    input="hi",
+                    response_format="mp3",
+                )
+        finally:
+            await sdk.close()
+
+    async def test_audio_speech_streaming_iter_bytes(self, mock_engine):
+        sdk = self._make_sdk_client(mock_engine)
+        try:
+            async with sdk.audio.speech.with_streaming_response.create(
+                model="piper-plus",
+                voice="ja",
+                input="streaming",
+            ) as response:
+                chunks = [chunk async for chunk in response.iter_bytes(1024)]
+            assert len(chunks) > 0
+            assert b"".join(chunks)[:4] == b"RIFF"
+        finally:
+            await sdk.close()
