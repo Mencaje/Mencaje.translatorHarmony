@@ -7,7 +7,8 @@
 <p align="center">
   平台：<strong>HarmonyOS NEXT</strong>（手机 / 平板 / 2in1）<br/>
   包名：<code>com.Mencaje.translator</code><br/>
-  仓库：<a href="https://gitee.com/mencaje/Mencaje.translatorHarmony">gitee.com/mencaje/Mencaje.translatorHarmony</a>
+  仓库（主）：<a href="https://github.com/Mencaje/Mencaje.translatorHarmony">github.com/Mencaje/Mencaje.translatorHarmony</a><br/>
+  镜像：<a href="https://gitee.com/mencaje/Mencaje.translatorHarmony">gitee.com/mencaje/Mencaje.translatorHarmony</a>（单文件 &gt;100MB 受限，大资源请用 GitHub + LFS）
 </p>
 
 ---

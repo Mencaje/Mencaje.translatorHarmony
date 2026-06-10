@@ -1,11 +1,15 @@
 # Batch-commit and push large binary assets to Gitee (SSH). ~100MB per push.
 param(
     [int]$MaxBatchMB = 100,
+    [string]$RemoteName = 'github',
+    [string]$Branch = 'main',
     [string]$RepoRoot = (Split-Path $PSScriptRoot -Parent)
 )
 
 $ErrorActionPreference = 'Stop'
 Set-Location $RepoRoot
+
+git lfs install 2>$null | Out-Null
 
 $env:GIT_AUTHOR_NAME = 'mencaje'
 $env:GIT_AUTHOR_EMAIL = 'mencaje@gitee.com'
@@ -85,7 +89,7 @@ foreach ($b in $batches) {
     $pushed = $false
     for ($try = 1; $try -le 3; $try++) {
         Write-Host "Push attempt $try ..."
-        git push origin main 2>&1
+        git push $RemoteName $Branch 2>&1
         if ($LASTEXITCODE -eq 0) { $pushed = $true; break }
         Start-Sleep -Seconds 10
     }
