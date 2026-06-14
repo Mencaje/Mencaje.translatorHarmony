@@ -5,6 +5,10 @@
 </p>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"/></a>
+</p>
+
+<p align="center">
   平台：<strong>HarmonyOS NEXT</strong>（手机 / 平板 / 2in1）<br/>
   包名：<code>com.Mencaje.translator</code><br/>
   仓库（主）：<a href="https://github.com/Mencaje/Mencaje.translatorHarmony">github.com/Mencaje/Mencaje.translatorHarmony</a><br/>
@@ -458,9 +462,9 @@ Mencajetranslator/
 
 ## 许可证
 
-- **本仓库应用源码**（`entry/src/main/ets`、`entry/src/main/cpp` 中自研部分、`scripts` 等）：[**Apache License 2.0**](LICENSE)
-- **第三方库**：各自许可证，见 [NOTICE](NOTICE)
-- **模型权重**：**不包含**在 Git 仓库中；使用须遵守 Meta NLLB、Rhasspy Piper 等上游条款
+- **本仓库应用源码**（`entry/src/main/ets`、`entry/src/main/cpp` 中自研部分、`scripts` 等）：[**GNU General Public License v3.0**](LICENSE)（GPL-3.0）
+- **第三方库**：各自许可证（MIT、Apache-2.0、GPL-3.0 等），见 [NOTICE](NOTICE)；与本项目组合分发时须遵守 GPL-3.0 对整体作品的约束
+- **模型权重**：使用须遵守 Meta NLLB、Rhasspy Piper 等上游条款
 
 ---
 

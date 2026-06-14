@@ -1,6 +1,13 @@
 Mencaje Translator for HarmonyOS
 Copyright 2024-2026 Mencaje / 萌创匠盒
 
+PROJECT LICENSE
+================================================================================
+This repository (application source under entry/, scripts/, etc.) is licensed
+under GNU General Public License v3.0. See LICENSE in the repository root.
+Bundled third-party components remain under their respective licenses below.
+================================================================================
+
 This product bundles or links the following open source software.
 
 ================================================================================
